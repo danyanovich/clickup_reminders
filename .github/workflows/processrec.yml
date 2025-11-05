@@ -31,6 +31,7 @@ jobs:
       CLICKUP_TEAM_ID: ${{ secrets.CLICKUP_WORKSPACE_ID }}
       CLICKUP_WORKSPACE_ID: ${{ secrets.CLICKUP_WORKSPACE_ID }}
       TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+      TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
       BASE_DIR: ${{ github.workspace }}
       TZ: 'UTC'
 
@@ -61,9 +62,32 @@ jobs:
       - name: Verify required secrets
         run: |
           echo "Checking secrets..."
+          echo "Event: ${GITHUB_EVENT_NAME}"
+
+          # Basic presence info
           [ -z "$CLICKUP_API_KEY" ] && echo "❌ CLICKUP_API_KEY missing" || echo "✅ CLICKUP_API_KEY set"
-          [ -z "$CLICKUP_WORKSPACE_ID" ] && echo "❌ CLICKUP_WORKSPACE_ID missing" || echo "✅ CLICKUP_WORKSPACE_ID set"
-          [ -z "$TELEGRAM_BOT_TOKEN" ] && echo "❌ TELEGRAM_BOT_TOKEN missing" && exit 1 || echo "✅ TELEGRAM_BOT_TOKEN set"
+          # Prefer checking TEAM_ID, but also show WORKSPACE_ID for clarity
+          [ -z "$CLICKUP_TEAM_ID" ] && echo "❌ CLICKUP_TEAM_ID missing" || echo "✅ CLICKUP_TEAM_ID set"
+          [ -z "$CLICKUP_WORKSPACE_ID" ] && echo "ℹ️  CLICKUP_WORKSPACE_ID empty (ok if TEAM_ID is set)" || echo "ℹ️  CLICKUP_WORKSPACE_ID present"
+          [ -z "$TELEGRAM_BOT_TOKEN" ] && echo "❌ TELEGRAM_BOT_TOKEN missing" || echo "✅ TELEGRAM_BOT_TOKEN set"
+          [ -z "$TELEGRAM_CHAT_ID" ] && echo "ℹ️  TELEGRAM_CHAT_ID not set (will use config/cache if available)" || echo "ℹ️  TELEGRAM_CHAT_ID present"
+
+          # Enforce required secrets on schedule/manual runs; be lenient on push
+          if [ "$GITHUB_EVENT_NAME" = "schedule" ] || [ "$GITHUB_EVENT_NAME" = "workflow_dispatch" ]; then
+            missing=0
+            [ -z "$CLICKUP_API_KEY" ] && missing=1
+            [ -z "$CLICKUP_TEAM_ID" ] && missing=1
+            [ -z "$TELEGRAM_BOT_TOKEN" ] && missing=1
+            if [ $missing -eq 1 ]; then
+              echo "❌ Required secrets missing for ${GITHUB_EVENT_NAME} run. Failing early."
+              exit 1
+            fi
+          else
+            # For push events, do not fail the job if secrets are missing
+            if [ -z "$CLICKUP_API_KEY" ] || [ -z "$CLICKUP_TEAM_ID" ] || [ -z "$TELEGRAM_BOT_TOKEN" ]; then
+              echo "⚠️  One or more secrets are missing on push event; continuing without failure."
+            fi
+          fi
 
       - name: Dispatch ClickUp reminders to Telegram
         continue-on-error: true
