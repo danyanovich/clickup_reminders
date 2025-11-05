@@ -79,8 +79,8 @@ def _iter_secret_candidates() -> Iterable[Path]:
         yield candidate.expanduser()
 
 
-def _extract_nested(payload: Dict[str, Any], paths: Sequence[Sequence[str]]) -> Optional[str]:
-    """Return the first non-empty string located at any of the provided paths."""
+def _extract_nested(payload: Dict[str, Any], paths: Sequence[Sequence[str]]) -> Optional[Any]:
+    """Return the first non-empty value located at any of the provided paths."""
     for path in paths:
         node: Any = payload
         for key in path:
@@ -95,10 +95,17 @@ def _extract_nested(payload: Dict[str, Any], paths: Sequence[Sequence[str]]) -> 
             node = node["value"]
         if isinstance(node, str) and node:
             return node
+        if isinstance(node, (list, tuple)):
+            collected = []
+            for item in node:
+                if isinstance(item, str) and item.strip():
+                    collected.append(item.strip())
+            if collected:
+                return collected
     return None
 
 
-def load_runtime_credentials(config: Dict[str, Any]) -> Dict[str, str]:
+def load_runtime_credentials(config: Dict[str, Any]) -> Dict[str, Any]:
     """Load ClickUp and Telegram credentials from env/secrets."""
     env = {
         "clickup_api_key": os.getenv("CLICKUP_API_KEY"),
@@ -106,6 +113,34 @@ def load_runtime_credentials(config: Dict[str, Any]) -> Dict[str, str]:
         "telegram_bot_token": os.getenv("TELEGRAM_BOT_TOKEN"),
         "telegram_chat_id": os.getenv("TELEGRAM_CHAT_ID") or (config.get("telegram", {}) or {}).get("chat_id"),
     }
+
+    team_ids: List[str] = []
+    env_team_ids = os.getenv("CLICKUP_TEAM_IDS")
+    if env_team_ids:
+        for candidate in env_team_ids.split(","):
+            normalized = candidate.strip()
+            if normalized:
+                team_ids.append(normalized)
+
+    clickup_cfg = config.get("clickup", {}) or {}
+    for source in (
+        clickup_cfg.get("team_ids"),
+        clickup_cfg.get("workspace_ids"),
+        config.get("clickup_team_ids"),
+        config.get("clickup_workspace_ids"),
+    ):
+        if not source:
+            continue
+        if isinstance(source, (list, tuple, set)):
+            iterable = source
+        else:
+            iterable = [source]
+        for candidate in iterable:
+            normalized = str(candidate).strip()
+            if normalized and normalized not in team_ids:
+                team_ids.append(normalized)
+
+    env["clickup_team_ids"] = team_ids
 
     missing = {key for key, value in env.items() if key != "telegram_chat_id" and not value}
     secrets_payload: Optional[Dict[str, Any]] = None
@@ -123,6 +158,11 @@ def load_runtime_credentials(config: Dict[str, Any]) -> Dict[str, str]:
         secret_mappings = {
             "clickup_api_key": (("clickup", "api_key"), ("telegram", "secrets", "clickup_api_key")),
             "clickup_team_id": (("clickup", "team_id"), ("telegram", "secrets", "clickup_team_id")),
+            "clickup_team_ids": (
+                ("clickup", "team_ids"),
+                ("clickup", "workspace_ids"),
+                ("telegram", "secrets", "clickup_team_ids"),
+            ),
             "telegram_bot_token": (
                 ("telegram", "bot_token"),
                 ("telegram", "secrets", "bot_token"),
@@ -140,10 +180,31 @@ def load_runtime_credentials(config: Dict[str, Any]) -> Dict[str, str]:
 
     if not env.get("clickup_api_key"):
         raise ConfigurationError("CLICKUP_API_KEY not provided via env or secrets.")
-    if not env.get("clickup_team_id"):
-        raise ConfigurationError("CLICKUP_TEAM_ID not provided via env or secrets/config.")
+    if not env.get("clickup_team_id") and not env.get("clickup_team_ids"):
+        raise ConfigurationError("CLICKUP_TEAM_ID(S) not provided via env or secrets/config.")
     if not env.get("telegram_bot_token"):
         raise ConfigurationError("TELEGRAM_BOT_TOKEN not provided via env or secrets.")
+
+    team_ids_from_env = env.get("clickup_team_ids")
+    normalized_team_ids: List[str] = []
+    if isinstance(team_ids_from_env, (list, tuple, set)):
+        normalized_team_ids = [str(item).strip() for item in team_ids_from_env if str(item).strip()]
+    elif isinstance(team_ids_from_env, str):
+        normalized_team_ids = [team_ids_from_env.strip()]
+
+    if not normalized_team_ids:
+        fallback_team_id = env.get("clickup_team_id")
+        if fallback_team_id:
+            normalized_team_ids = [str(fallback_team_id).strip()]
+    else:
+        if env.get("clickup_team_id"):
+            fallback_team_id = str(env["clickup_team_id"]).strip()
+            if fallback_team_id and fallback_team_id not in normalized_team_ids:
+                normalized_team_ids.insert(0, fallback_team_id)
+        if normalized_team_ids:
+            env["clickup_team_id"] = normalized_team_ids[0]
+
+    env["clickup_team_ids"] = normalized_team_ids
 
     return env  # contains telegram_chat_id which may still be None
 
@@ -194,10 +255,18 @@ class TelegramReminderService:
         self.base_url = f"https://api.telegram.org/bot{self.bot_token}"
         self.default_chat_id = credentials.get("telegram_chat_id") or self._load_cached_chat_id()
 
-        self.clickup_client = ClickUpClient(
-            api_key=credentials["clickup_api_key"],
-            team_id=str(credentials["clickup_team_id"]),
-        )
+        self.team_ids = self._resolve_team_ids()
+        if not self.team_ids:
+            raise ConfigurationError("Не указаны идентификаторы ClickUp workspace/team.")
+
+        self.clickup_clients = [
+            ClickUpClient(
+                api_key=credentials["clickup_api_key"],
+                team_id=team_id,
+            )
+            for team_id in self.team_ids
+        ]
+        self.clickup_client = self.clickup_clients[0]
 
         self.clickup_config = self.config.get("clickup", {}) or {}
         self.status_mapping = self._build_status_mapping()
@@ -218,6 +287,29 @@ class TelegramReminderService:
         config = load_raw_config()
         credentials = load_runtime_credentials(config)
         return cls(config=config, credentials=credentials)
+
+    def _resolve_team_ids(self) -> List[str]:
+        team_ids_raw = self.credentials.get("clickup_team_ids")
+        team_ids: List[str] = []
+
+        if isinstance(team_ids_raw, (list, tuple, set)):
+            candidates = team_ids_raw
+        elif isinstance(team_ids_raw, str):
+            candidates = [team_ids_raw]
+        else:
+            candidates = []
+
+        for candidate in candidates:
+            normalized = str(candidate).strip()
+            if normalized and normalized not in team_ids:
+                team_ids.append(normalized)
+
+        fallback = self.credentials.get("clickup_team_id")
+        if fallback:
+            fallback_str = str(fallback).strip()
+            if fallback_str and fallback_str not in team_ids:
+                team_ids.insert(0, fallback_str)
+        return team_ids
 
     def _build_status_mapping(self) -> Dict[str, str]:
         clickup_section = self.clickup_config
@@ -369,18 +461,27 @@ class TelegramReminderService:
         try:
             if self.reminder_tags:
                 seen_ids: set[str] = set()
-                for tag in self.reminder_tags:
-                    for task in self.clickup_client.fetch_tasks_by_tag(tag):
+                for client in self.clickup_clients:
+                    for tag in self.reminder_tags:
+                        for task in client.fetch_tasks_by_tag(tag):
+                            task_id = str(task.get("id") or "").strip()
+                            if not task_id or task_id in seen_ids:
+                                continue
+                            tasks_raw.append(task)
+                            seen_ids.add(task_id)
+            else:
+                seen_ids = set()
+                for client in self.clickup_clients:
+                    batch = client.fetch_tasks(
+                        list_name=self.reminders_list_name if not self.reminders_list_id else None,
+                        list_id=self.reminders_list_id,
+                    )
+                    for task in batch:
                         task_id = str(task.get("id") or "").strip()
                         if not task_id or task_id in seen_ids:
                             continue
                         tasks_raw.append(task)
                         seen_ids.add(task_id)
-            else:
-                tasks_raw = self.clickup_client.fetch_tasks(
-                    list_name=self.reminders_list_name if not self.reminders_list_id else None,
-                    list_id=self.reminders_list_id,
-                )
         except Exception as exc:
             LOGGER.error("Failed to fetch tasks from ClickUp: %s", exc)
             raise

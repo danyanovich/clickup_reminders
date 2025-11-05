@@ -284,6 +284,33 @@ class TelegramReminderServiceTest(unittest.TestCase):
         self.assertIn("Task Alex", " ".join(messages_by_chat["custom-chat"]))
         self.assertIn("Task Eve", " ".join(messages_by_chat["custom-chat"]))
 
+    @patch("telegram_reminder_service.ClickUpClient")
+    def test_fetch_pending_tasks_multiple_team_ids(self, mock_client_cls):
+        client_a = MagicMock()
+        client_b = MagicMock()
+        client_a.fetch_tasks_by_tag.return_value = [
+            {"id": "1", "name": "Task A", "status": {"status": "open"}, "due_date": None},
+        ]
+        client_b.fetch_tasks_by_tag.return_value = [
+            {"id": "2", "name": "Task B", "status": {"status": "open"}, "due_date": None},
+            {"id": "1", "name": "Task A duplicate", "status": {"status": "open"}, "due_date": None},
+        ]
+        mock_client_cls.side_effect = [client_a, client_b]
+
+        config = dict(self.config)
+        config["clickup"] = dict(config["clickup"], reminder_tags=["#напоминание"], team_ids=["team-a", "team-b"])
+
+        credentials = dict(self.credentials)
+        credentials["clickup_team_ids"] = ["team-a", "team-b"]
+        credentials["clickup_team_id"] = "team-a"
+
+        service = TelegramReminderService(config, credentials, session=DummySession())
+        tasks = service.fetch_pending_tasks()
+
+        self.assertEqual([task.task_id for task in tasks], ["1", "2"])
+        client_a.fetch_tasks_by_tag.assert_called_once_with("#напоминание")
+        client_b.fetch_tasks_by_tag.assert_called_once_with("#напоминание")
+
 
 if __name__ == "__main__":
     unittest.main()

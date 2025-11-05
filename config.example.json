@@ -1,5 +1,6 @@
 {
   "clickup_workspace_id": "<your_workspace_id>",
+  "clickup_team_ids": ["<your_workspace_id>", "<optional_second_workspace_id>"],
   "reminder_list_name": "Напоминания",
   "reminder_tags": ["напоминание"],
   "phone_mapping": {
@@ -12,6 +13,19 @@
   "check_interval_minutes": 30,
   "call_timeout_seconds": 30,
   "max_retries": 2,
+  "clickup": {
+    "workspace_id": "<your_workspace_id>",
+    "team_ids": ["<your_workspace_id>", "<optional_second_workspace_id>"],
+    "status_mapping": {
+      "ВЫПОЛНЕНО": "выполнена",
+      "НЕ_ВЫПОЛНЕНО": "на доработке",
+      "В_РАБОТЕ": "в работе"
+    },
+    "completed_status": "выполнена",
+    "pending_status": "поставлена",
+    "in_progress_status": "в работе",
+    "reminder_tags": ["#напоминание"]
+  },
   "telegram": {
     "enabled": true,
     "chat_id": "<your_chat_id_or_group_id>",
