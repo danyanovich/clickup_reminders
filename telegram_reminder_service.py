@@ -12,6 +12,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import time
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
@@ -764,6 +765,62 @@ class TelegramReminderService:
             self._dispatch_tasks_to_chat(target_chat, bucket)
 
         return tasks
+
+    def poll_updates_for(
+        self,
+        duration: float,
+        poll_interval: float = 1.0,
+        timeout: int = 10,
+    ) -> int:
+        """
+        Poll Telegram updates for a limited duration to process callbacks/messages.
+
+        Returns the amount of processed updates.
+        """
+        if duration <= 0:
+            return 0
+
+        deadline = time.monotonic() + duration
+        offset: Optional[int] = None
+        processed = 0
+
+        while True:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                break
+
+            effective_timeout = min(timeout, max(1, int(remaining)))
+            try:
+                updates = self.get_updates(offset=offset, timeout=effective_timeout)
+            except Exception as exc:  # pragma: no cover - network guard
+                LOGGER.warning("Polling updates failed: %s", exc)
+                sleep_for = min(poll_interval, max(0.1, deadline - time.monotonic()))
+                time.sleep(sleep_for)
+                continue
+
+            if not updates:
+                time.sleep(min(poll_interval, max(0.1, deadline - time.monotonic())))
+                continue
+
+            last_update_id: Optional[int] = offset
+            for update in updates:
+                update_id = update.get("update_id")
+                if isinstance(update_id, int):
+                    last_update_id = update_id
+
+                if "message" in update:
+                    self.handle_message(update["message"])
+                    processed += 1
+                elif "callback_query" in update:
+                    self.handle_callback(update["callback_query"])
+                    processed += 1
+                else:
+                    LOGGER.debug("Ignored update keys: %s", list(update.keys()))
+
+            if last_update_id is not None:
+                offset = last_update_id + 1
+
+        return processed
 
     # ------------------------------------------------------------------ #
     # Update handlers

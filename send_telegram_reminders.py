@@ -32,6 +32,12 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         action="store_true",
         help="Enable debug logging.",
     )
+    parser.add_argument(
+        "--poll-seconds",
+        type=float,
+        default=0.0,
+        help="After sending reminders keep polling Telegram for callbacks during this duration (seconds).",
+    )
     return parser.parse_args(argv)
 
 
@@ -49,6 +55,13 @@ def main(argv: list[str] | None = None) -> int:
             limit=args.limit,
             broadcast_all=bool(args.chat_id),
         )
+        if args.poll_seconds > 0:
+            logging.info(
+                "Polling Telegram for callbacks during %.1f seconds...",
+                args.poll_seconds,
+            )
+            processed = service.poll_updates_for(duration=args.poll_seconds)
+            logging.info("Processed updates while polling: %s", processed)
     except ConfigurationError as exc:
         logging.error("Configuration error: %s", exc)
         return 2

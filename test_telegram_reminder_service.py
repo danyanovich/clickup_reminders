@@ -327,6 +327,26 @@ class TelegramReminderServiceTest(unittest.TestCase):
 
         mock_client.fetch_tasks_by_tag.assert_called_once_with("#напоминание", space_ids=["123"])
 
+    @patch("telegram_reminder_service.time")
+    @patch("telegram_reminder_service.ClickUpClient")
+    def test_poll_updates_for_processes_callbacks(self, mock_client_cls, mock_time):
+        mock_client_cls.return_value = MagicMock()
+        session = DummySession()
+        service = TelegramReminderService(self.config, self.credentials, session=session)
+
+        mock_time.monotonic.side_effect = [0, 0, 3]
+        mock_time.sleep.return_value = None
+
+        with patch.object(service, "get_updates", return_value=[{"update_id": 1, "callback_query": {"id": "cb"}}]) as get_updates, patch.object(
+            service, "handle_callback"
+        ) as handle_callback, patch.object(service, "handle_message") as handle_message:
+            processed = service.poll_updates_for(duration=2, timeout=5)
+
+        self.assertEqual(processed, 1)
+        get_updates.assert_called_once()
+        handle_callback.assert_called_once()
+        handle_message.assert_not_called()
+
 
 if __name__ == "__main__":
     unittest.main()
