@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from functools import lru_cache
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Sequence
 
 import requests
 
@@ -43,27 +43,51 @@ class ClickUpClient:
         response.raise_for_status()
         return response.json()
 
-    def fetch_tasks_by_tag(self, tag: str) -> List[Dict[str, Any]]:
+    def fetch_tasks_by_tag(self, tag: str, space_ids: Sequence[str] | None = None) -> List[Dict[str, Any]]:
         """Return every task across the workspace that contains the provided tag."""
 
-        normalized = tag.lstrip("#").strip()
-        if not normalized:
+        base = str(tag or "").strip()
+        if not base:
             return []
 
-        tasks: List[Dict[str, Any]] = []
-        next_page: Optional[int] = 0
+        tag_variants: List[str] = []
+        if base not in tag_variants:
+            tag_variants.append(base)
+        if base.startswith("#"):
+            stripped = base.lstrip("#").strip()
+            if stripped and stripped not in tag_variants:
+                tag_variants.append(stripped)
+        else:
+            with_hash = f"#{base}"
+            if with_hash not in tag_variants:
+                tag_variants.append(with_hash)
 
-        while next_page is not None:
-            params = {"subtasks": "true", "page": next_page, "tags[]": normalized}
-            response = self.session.get(f"{self.BASE_URL}/team/{self.team_id}/task", params=params)
-            response.raise_for_status()
+        overall: List[Dict[str, Any]] = []
+        seen_ids: set[str] = set()
 
-            payload = response.json()
-            tasks.extend(payload.get("tasks", []))
-            raw_next = payload.get("next_page")
-            next_page = raw_next if isinstance(raw_next, int) else None
+        for variant in tag_variants:
+            next_page: Optional[int] = 0
+            while next_page is not None:
+                params: Dict[str, Any] = {"subtasks": "true", "page": next_page, "tags[]": variant}
+                if space_ids:
+                    params["space_ids[]"] = list(space_ids)
+                response = self.session.get(f"{self.BASE_URL}/team/{self.team_id}/task", params=params)
+                response.raise_for_status()
 
-        return tasks
+                payload = response.json()
+                for task in payload.get("tasks", []):
+                    task_id = str(task.get("id") or "").strip()
+                    if not task_id or task_id in seen_ids:
+                        continue
+                    overall.append(task)
+                    seen_ids.add(task_id)
+                raw_next = payload.get("next_page")
+                next_page = raw_next if isinstance(raw_next, int) else None
+
+            if overall:
+                break
+
+        return overall
 
     def update_status(self, task_id: str, status: str) -> None:
         """Update ClickUp task status."""

@@ -153,8 +153,8 @@ class TelegramReminderServiceTest(unittest.TestCase):
         tasks = service.fetch_pending_tasks()
 
         self.assertEqual([task.task_id for task in tasks], ["1", "2"])
-        mock_client.fetch_tasks_by_tag.assert_any_call("#напоминание")
-        mock_client.fetch_tasks_by_tag.assert_any_call("важно")
+        mock_client.fetch_tasks_by_tag.assert_any_call("#напоминание", space_ids=None)
+        mock_client.fetch_tasks_by_tag.assert_any_call("важно", space_ids=None)
 
     @patch("telegram_reminder_service.ClickUpClient")
     def test_callback_failure_reports_to_user(self, mock_client_cls):
@@ -308,8 +308,24 @@ class TelegramReminderServiceTest(unittest.TestCase):
         tasks = service.fetch_pending_tasks()
 
         self.assertEqual([task.task_id for task in tasks], ["1", "2"])
-        client_a.fetch_tasks_by_tag.assert_called_once_with("#напоминание")
-        client_b.fetch_tasks_by_tag.assert_called_once_with("#напоминание")
+        client_a.fetch_tasks_by_tag.assert_called_once_with("#напоминание", space_ids=None)
+        client_b.fetch_tasks_by_tag.assert_called_once_with("#напоминание", space_ids=None)
+
+    @patch("telegram_reminder_service.ClickUpClient")
+    def test_fetch_pending_tasks_respects_space_ids(self, mock_client_cls):
+        mock_client = MagicMock()
+        mock_client.fetch_tasks_by_tag.return_value = [
+            {"id": "1", "name": "Task A", "status": {"status": "open"}, "due_date": None},
+        ]
+        mock_client_cls.return_value = mock_client
+
+        config = dict(self.config)
+        config["clickup"] = dict(config["clickup"], reminder_tags=["#напоминание"], space_ids=["123"])
+
+        service = TelegramReminderService(config, self.credentials, session=DummySession())
+        service.fetch_pending_tasks()
+
+        mock_client.fetch_tasks_by_tag.assert_called_once_with("#напоминание", space_ids=["123"])
 
 
 if __name__ == "__main__":

@@ -105,11 +105,31 @@ def _extract_nested(payload: Dict[str, Any], paths: Sequence[Sequence[str]]) -> 
     return None
 
 
+def _normalise_ids(values: Iterable[Any]) -> List[str]:
+    cleaned: List[str] = []
+    for candidate in values:
+        if candidate is None:
+            continue
+        normalized = str(candidate).strip()
+        if not normalized:
+            continue
+        if "<" in normalized or ">" in normalized:
+            continue
+        if normalized.lower().startswith("optional"):
+            continue
+        if not normalized.replace("-", "").isdigit():
+            continue
+        if normalized not in cleaned:
+            cleaned.append(normalized)
+    return cleaned
+
+
 def load_runtime_credentials(config: Dict[str, Any]) -> Dict[str, Any]:
     """Load ClickUp and Telegram credentials from env/secrets."""
-    env = {
+    env: Dict[str, Any] = {
         "clickup_api_key": os.getenv("CLICKUP_API_KEY"),
         "clickup_team_id": os.getenv("CLICKUP_TEAM_ID") or config.get("clickup_workspace_id"),
+        "clickup_space_ids": os.getenv("CLICKUP_SPACE_IDS"),
         "telegram_bot_token": os.getenv("TELEGRAM_BOT_TOKEN"),
         "telegram_chat_id": os.getenv("TELEGRAM_CHAT_ID") or (config.get("telegram", {}) or {}).get("chat_id"),
     }
@@ -140,7 +160,23 @@ def load_runtime_credentials(config: Dict[str, Any]) -> Dict[str, Any]:
             if normalized and normalized not in team_ids:
                 team_ids.append(normalized)
 
-    env["clickup_team_ids"] = team_ids
+    env["clickup_team_ids"] = _normalise_ids(team_ids)
+
+    space_candidates: List[Any] = []
+    if env.get("clickup_space_ids"):
+        space_candidates.extend(str(env["clickup_space_ids"]).split(","))
+    for source in (
+        clickup_cfg.get("space_ids"),
+        config.get("clickup_space_ids"),
+    ):
+        if not source:
+            continue
+        if isinstance(source, (list, tuple, set)):
+            values = source
+        else:
+            values = [source]
+        space_candidates.extend(values)
+    env["clickup_space_ids"] = _normalise_ids(space_candidates)
 
     missing = {key for key, value in env.items() if key != "telegram_chat_id" and not value}
     secrets_payload: Optional[Dict[str, Any]] = None
@@ -162,6 +198,11 @@ def load_runtime_credentials(config: Dict[str, Any]) -> Dict[str, Any]:
                 ("clickup", "team_ids"),
                 ("clickup", "workspace_ids"),
                 ("telegram", "secrets", "clickup_team_ids"),
+            ),
+            "clickup_space_ids": (
+                ("clickup", "space_ids"),
+                ("clickup", "workspace_ids"),
+                ("telegram", "secrets", "clickup_space_ids"),
             ),
             "telegram_bot_token": (
                 ("telegram", "bot_token"),
@@ -188,23 +229,30 @@ def load_runtime_credentials(config: Dict[str, Any]) -> Dict[str, Any]:
     team_ids_from_env = env.get("clickup_team_ids")
     normalized_team_ids: List[str] = []
     if isinstance(team_ids_from_env, (list, tuple, set)):
-        normalized_team_ids = [str(item).strip() for item in team_ids_from_env if str(item).strip()]
+        normalized_team_ids = _normalise_ids(team_ids_from_env)
     elif isinstance(team_ids_from_env, str):
-        normalized_team_ids = [team_ids_from_env.strip()]
+        normalized_team_ids = _normalise_ids([team_ids_from_env])
 
     if not normalized_team_ids:
         fallback_team_id = env.get("clickup_team_id")
         if fallback_team_id:
             normalized_team_ids = [str(fallback_team_id).strip()]
     else:
-        if env.get("clickup_team_id"):
-            fallback_team_id = str(env["clickup_team_id"]).strip()
-            if fallback_team_id and fallback_team_id not in normalized_team_ids:
-                normalized_team_ids.insert(0, fallback_team_id)
+        fallback_team_id = env.get("clickup_team_id")
+        fallback_candidates: List[str] = []
+        if fallback_team_id:
+            fallback_candidates = _normalise_ids([fallback_team_id])
+        for candidate in fallback_candidates:
+            if candidate not in normalized_team_ids:
+                normalized_team_ids.insert(0, candidate)
         if normalized_team_ids:
             env["clickup_team_id"] = normalized_team_ids[0]
 
     env["clickup_team_ids"] = normalized_team_ids
+
+    space_ids = env.get("clickup_space_ids")
+    if isinstance(space_ids, str):
+        env["clickup_space_ids"] = _normalise_ids(space_ids.split(","))
 
     return env  # contains telegram_chat_id which may still be None
 
@@ -278,6 +326,7 @@ class TelegramReminderService:
             or self.config.get("reminder_list_name")
             or "Напоминания"
         )
+        self.space_ids = self._resolve_space_ids()
         self.assignee_chat_map = self._build_assignee_chat_map()
         tz_name = config.get("working_hours", {}).get("timezone") or "UTC"
         self.timezone_name = tz_name
@@ -310,6 +359,22 @@ class TelegramReminderService:
             if fallback_str and fallback_str not in team_ids:
                 team_ids.insert(0, fallback_str)
         return team_ids
+
+    def _resolve_space_ids(self) -> List[str]:
+        candidates: List[Any] = []
+        for source in (
+            self.clickup_config.get("space_ids"),
+            self.config.get("clickup_space_ids"),
+            self.credentials.get("clickup_space_ids"),
+        ):
+            if not source:
+                continue
+            if isinstance(source, (list, tuple, set)):
+                values = source
+            else:
+                values = [source]
+            candidates.extend(values)
+        return _normalise_ids(candidates)
 
     def _build_status_mapping(self) -> Dict[str, str]:
         clickup_section = self.clickup_config
@@ -463,7 +528,7 @@ class TelegramReminderService:
                 seen_ids: set[str] = set()
                 for client in self.clickup_clients:
                     for tag in self.reminder_tags:
-                        for task in client.fetch_tasks_by_tag(tag):
+                        for task in client.fetch_tasks_by_tag(tag, space_ids=self.space_ids or None):
                             task_id = str(task.get("id") or "").strip()
                             if not task_id or task_id in seen_ids:
                                 continue
