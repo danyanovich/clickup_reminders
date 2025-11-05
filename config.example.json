@@ -1,0 +1,25 @@
+{
+  "clickup_workspace_id": "<your_workspace_id>",
+  "reminder_list_name": "Напоминания",
+  "phone_mapping": {
+    "Alex": "+10000000000"
+  },
+  "working_hours": {
+    "start": 9,
+    "end": 18
+  },
+  "check_interval_minutes": 30,
+  "call_timeout_seconds": 30,
+  "max_retries": 2,
+  "telegram": {
+    "enabled": true,
+    "chat_id": "<your_chat_id_or_group_id>",
+    "notifications": {
+      "task_reminders": true,
+      "status_updates": true,
+      "call_notifications": true,
+      "sms_notifications": true,
+      "errors": true
+    }
+  }
+}

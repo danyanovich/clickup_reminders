@@ -1,0 +1,80 @@
+name: Telegram Reminders
+
+permissions:
+  contents: write
+  actions: write
+
+on:
+  workflow_dispatch:
+    inputs:
+      debug:
+        description: 'Enable debug mode'
+        required: false
+        default: 'false'
+  
+  schedule:
+    - cron: "0 * * * *"  # Каждый час (в начале часа, по UTC)
+  
+  push:
+    branches:
+      - main
+    paths:
+      - '.github/workflows/**'  # Запуск при изменении workflow-файлов
+
+jobs:
+  run-script:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    env:
+      CLICKUP_API_KEY: ${{ secrets.CLICKUP_API_KEY }}
+      CLICKUP_TEAM_ID: ${{ secrets.CLICKUP_WORKSPACE_ID }}
+      CLICKUP_WORKSPACE_ID: ${{ secrets.CLICKUP_WORKSPACE_ID }}
+      TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+      BASE_DIR: ${{ github.workspace }}
+      TZ: 'UTC'
+
+    steps:
+      - name: Debug Info
+        run: |
+          echo "🕐 Workflow triggered at: $(date -u)"
+          echo "🎯 Event: ${{ github.event_name }}"
+          echo "🔄 Run number: ${{ github.run_number }}"
+          echo "📅 Schedule: ${{ github.event.schedule }}"
+
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0  # Полная история для git
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Install dependencies
+        run: |
+          pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Verify required secrets
+        run: |
+          echo "Checking secrets..."
+          [ -z "$CLICKUP_API_KEY" ] && echo "❌ CLICKUP_API_KEY missing" || echo "✅ CLICKUP_API_KEY set"
+          [ -z "$CLICKUP_WORKSPACE_ID" ] && echo "❌ CLICKUP_WORKSPACE_ID missing" || echo "✅ CLICKUP_WORKSPACE_ID set"
+          [ -z "$TELEGRAM_BOT_TOKEN" ] && echo "❌ TELEGRAM_BOT_TOKEN missing" && exit 1 || echo "✅ TELEGRAM_BOT_TOKEN set"
+
+      - name: Dispatch ClickUp reminders to Telegram
+        continue-on-error: true
+        run: |
+          echo "📨 Sending ClickUp reminders to Telegram..."
+          python send_telegram_reminders.py --verbose
+
+      - name: Workflow summary
+        if: always()
+        run: |
+          echo "## 📊 Workflow Summary" >> $GITHUB_STEP_SUMMARY
+          echo "- **Triggered**: ${{ github.event_name }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Time**: $(date -u)" >> $GITHUB_STEP_SUMMARY
+          echo "- **Status**: ${{ job.status }}" >> $GITHUB_STEP_SUMMARY
