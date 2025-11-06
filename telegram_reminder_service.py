@@ -280,9 +280,14 @@ def _primary_assignee(task: Dict[str, Any]) -> str:
             return str(name)
     watchers = task.get("watchers") or []
     if watchers and isinstance(watchers, list):
+        creator = task.get("creator") or {}
+        creator_id = str(creator.get("id")) if creator else None
         for watcher in watchers:
+            watcher_id = str(watcher.get("id")) if watcher.get("id") is not None else None
+            if watcher_id and creator_id and watcher_id == creator_id:
+                continue
             name = watcher.get("username") or watcher.get("email") or watcher.get("name")
-            if name:
+            if name and name != "ClickBot":
                 return str(name)
     custom_fields = task.get("custom_fields") or []
     for field in custom_fields:
