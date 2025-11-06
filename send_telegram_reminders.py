@@ -65,7 +65,7 @@ def main(argv: list[str] | None = None) -> int:
         tasks = service.send_reminders(
             chat_id=args.chat_id,
             limit=args.limit,
-            broadcast_all=bool(args.chat_id),
+            broadcast_all=False,
         )
         if args.poll_seconds > 0:
             logging.info(
