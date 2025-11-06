@@ -35,9 +35,10 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument(
         "--poll-seconds",
         type=float,
-        default=0.0,
+        default=5.0,
         help=(
-            "Poll Telegram for callbacks before and after sending reminders during this duration (seconds)."
+            "Poll Telegram for callbacks before and after sending reminders during this duration (seconds). "
+            "Pass 0 to skip polling."
         ),
     )
     return parser.parse_args(argv)
@@ -52,6 +53,7 @@ def main(argv: list[str] | None = None) -> int:
 
     try:
         service = TelegramReminderService.from_environment()
+        service.ensure_callback_comments()
         if args.poll_seconds > 0:
             logging.info(
                 "Polling Telegram for callbacks during %.1f seconds before sending reminders...",

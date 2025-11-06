@@ -105,6 +105,13 @@ class ClickUpClient:
         )
         response.raise_for_status()
 
+    def fetch_comments(self, task_id: str) -> List[Dict[str, Any]]:
+        """Fetch comments for a task to verify audit trail."""
+        response = self.session.get(f"{self.BASE_URL}/task/{task_id}/comment")
+        response.raise_for_status()
+        payload = response.json()
+        return payload.get("comments", [])
+
     @lru_cache
     def _resolve_list_id(self, list_name: str) -> Optional[str]:
         """Walk the ClickUp hierarchy to find the list id by name."""

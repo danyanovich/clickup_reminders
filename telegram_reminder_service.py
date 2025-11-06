@@ -546,6 +546,85 @@ class TelegramReminderService:
         except Exception as exc:  # pragma: no cover - best effort
             LOGGER.debug("Failed to append callback log: %s", exc)
 
+    def ensure_callback_comments(self, max_entries: int = 20) -> None:
+        """
+        Verify that recent successful callback entries have a corresponding ClickUp comment.
+
+        Raises:
+            RuntimeError: if any recent task lacks the expected audit comment.
+        """
+        if not self.callback_log_path:
+            LOGGER.debug("Callback log path is not configured; skipping comment verification.")
+            return
+
+        try:
+            lines = self.callback_log_path.read_text(encoding="utf-8").splitlines()
+        except FileNotFoundError:
+            LOGGER.debug("Callback log file %s not found; skipping comment verification.", self.callback_log_path)
+            return
+        except Exception as exc:
+            LOGGER.warning("Failed to read callback log %s: %s", self.callback_log_path, exc)
+            return
+
+        if not lines:
+            LOGGER.debug("Callback log file %s is empty; nothing to verify.", self.callback_log_path)
+            return
+
+        recent_entries: Dict[str, Dict[str, Any]] = {}
+        for line in reversed(lines):
+            if len(recent_entries) >= max_entries:
+                break
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                entry = json.loads(line)
+            except json.JSONDecodeError:
+                LOGGER.debug("Skipping malformed callback log line: %s", line)
+                continue
+            if entry.get("result") != "success":
+                continue
+            task_id = str(entry.get("task_id") or "").strip()
+            if not task_id:
+                continue
+            if task_id not in recent_entries:
+                recent_entries[task_id] = entry
+
+        if not recent_entries:
+            LOGGER.debug("No successful callback entries found for verification.")
+            return
+
+        missing: List[str] = []
+        expected_fragment = "Статус обновлен через Telegram-бота"
+
+        for task_id, entry in recent_entries.items():
+            matched = False
+            for client in self.clickup_clients:
+                try:
+                    comments = client.fetch_comments(task_id)
+                except Exception as exc:
+                    LOGGER.debug("Failed to fetch comments for task %s via team %s: %s", task_id, client.team_id, exc)
+                    continue
+                for comment in comments:
+                    comment_text = comment.get("comment_text") or comment.get("text") or ""
+                    if expected_fragment in comment_text:
+                        status_suffix = entry.get("status_key")
+                        if not status_suffix or f"{expected_fragment}: {status_suffix}" in comment_text:
+                            matched = True
+                            break
+                        if expected_fragment in comment_text and not status_suffix:
+                            matched = True
+                            break
+                if matched:
+                    break
+            if not matched:
+                missing.append(task_id)
+
+        if missing:
+            raise RuntimeError(
+                "Не найдены комментарии с отметкой Telegram для задач: " + ", ".join(sorted(set(missing)))
+            )
+
     # --------------------------------------------------------------------- #
     # ClickUp helpers
     # --------------------------------------------------------------------- #
