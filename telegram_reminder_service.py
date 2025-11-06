@@ -301,8 +301,6 @@ def _primary_assignee(task: Dict[str, Any]) -> str:
 class TelegramReminderService:
     """Business logic that orchestrates ClickUp and Telegram interactions."""
 
-    ACTION_CODES = {"d": "ВЫПОЛНЕНО", "n": "НЕ_ВЫПОЛНЕНО", "p": "В_РАБОТЕ"}
-
     def __init__(
         self,
         config: Dict[str, Any],
@@ -348,6 +346,18 @@ class TelegramReminderService:
         )
         self.space_ids = self._resolve_space_ids()
         self.assignee_chat_map = self._build_assignee_chat_map()
+        self.status_actions = self._build_status_actions()
+        self.status_action_map = {action["code"]: action for action in self.status_actions}
+        self.status_action_by_key = {action["key"]: action for action in self.status_actions}
+        for action in self.status_actions:
+            if action["key"] not in self.status_mapping:
+                normalized = action["key"].replace("_", " ").lower()
+                LOGGER.warning(
+                    "Status mapping key '%s' missing in config; defaulting to '%s'.",
+                    action["key"],
+                    normalized,
+                )
+                self.status_mapping[action["key"]] = normalized
         tz_name = config.get("working_hours", {}).get("timezone") or "UTC"
         self.timezone_name = tz_name
         self.callback_log_path = self._resolve_callback_log_path()
@@ -404,6 +414,11 @@ class TelegramReminderService:
         mapping.setdefault("ВЫПОЛНЕНО", clickup_section.get("completed_status", "complete"))
         mapping.setdefault("НЕ_ВЫПОЛНЕНО", clickup_section.get("pending_status", "to do"))
         mapping.setdefault("В_РАБОТЕ", clickup_section.get("in_progress_status", "in progress"))
+        mapping.setdefault("ПОСТАВЛЕНА", clickup_section.get("pending_status", "поставлена"))
+        mapping.setdefault("НА_ДОРАБОТКЕ", clickup_section.get("callback_status", "на доработке"))
+        mapping.setdefault("БЭКЛОГ", clickup_section.get("backlog_status", "бэклог"))
+        mapping.setdefault("НА_ПРОВЕРКЕ", clickup_section.get("review_status", "на проверке"))
+        mapping.setdefault("ОТМЕНЕНА", clickup_section.get("cancelled_status", "отменена"))
         return mapping
 
     def _build_completed_statuses(self) -> set[str]:
@@ -483,6 +498,64 @@ class TelegramReminderService:
                     result[normalized] = chat_tuple
 
         return result
+
+    def _generate_action_code(self, index: int, used: set[str]) -> str:
+        base = f"a{index}"
+        counter = 0
+        candidate = base
+        while candidate in used:
+            counter += 1
+            candidate = f"{base}{counter}"
+        used.add(candidate)
+        return candidate
+
+    def _build_status_actions(self) -> List[Dict[str, str]]:
+        telegram_cfg = self.config.get("telegram") or {}
+        raw_actions = telegram_cfg.get("status_buttons") or telegram_cfg.get("status_actions")
+        actions: List[Dict[str, str]] = []
+        used_codes: set[str] = set()
+
+        if isinstance(raw_actions, list):
+            for idx, entry in enumerate(raw_actions):
+                if isinstance(entry, str):
+                    key = entry.strip().upper()
+                    if not key:
+                        continue
+                    text = key.title()
+                    code = self._generate_action_code(idx, used_codes)
+                elif isinstance(entry, dict):
+                    key = str(
+                        entry.get("key")
+                        or entry.get("status")
+                        or entry.get("value")
+                        or entry.get("name")
+                        or ""
+                    ).strip().upper()
+                    if not key:
+                        continue
+                    text = str(entry.get("text") or entry.get("label") or key.title())
+                    raw_code = entry.get("code")
+                    if raw_code:
+                        code = str(raw_code).strip()
+                        if not code or code in used_codes:
+                            code = self._generate_action_code(idx, used_codes)
+                        else:
+                            used_codes.add(code)
+                    else:
+                        code = self._generate_action_code(idx, used_codes)
+                else:
+                    continue
+                actions.append({"code": code, "key": key, "text": text})
+
+        if not actions:
+            actions = [
+                {"code": "d", "key": "ВЫПОЛНЕНО", "text": "✅ Выполнено"},
+                {"code": "n", "key": "НЕ_ВЫПОЛНЕНО", "text": "❌ Не выполнено"},
+                {"code": "p", "key": "В_РАБОТЕ", "text": "🔄 В работе"},
+            ]
+            used_codes.update(action["code"] for action in actions)
+
+        return actions
 
     def _load_cached_chat_id(self) -> Optional[str]:
         try:
@@ -792,17 +865,28 @@ class TelegramReminderService:
             f"⏰ <b>Срок:</b> {task.due_human}\n"
             f"🔗 <a href=\"{task.url}\">Открыть задачу</a>"
         )
-        reply_markup = {
-            "inline_keyboard": [
-                [
-                    {"text": "✅ Выполнено", "callback_data": f"s:{task.task_id}:d"},
-                    {"text": "❌ Не выполнено", "callback_data": f"s:{task.task_id}:n"},
-                ],
-                [
-                    {"text": "🔄 В работе", "callback_data": f"s:{task.task_id}:p"},
-                ],
-            ]
-        }
+        telegram_cfg = self.config.get("telegram") or {}
+        buttons_per_row = telegram_cfg.get("buttons_per_row", 3)
+        try:
+            buttons_per_row_int = int(buttons_per_row)
+            if buttons_per_row_int <= 0:
+                buttons_per_row_int = 3
+        except (TypeError, ValueError):
+            buttons_per_row_int = 3
+
+        keyboard_buttons = [
+            {
+                "text": action["text"],
+                "callback_data": f"s:{task.task_id}:{action['code']}",
+            }
+            for action in self.status_actions
+        ]
+
+        inline_keyboard: List[List[Dict[str, Any]]] = []
+        for idx in range(0, len(keyboard_buttons), buttons_per_row_int):
+            inline_keyboard.append(keyboard_buttons[idx : idx + buttons_per_row_int])
+
+        reply_markup = {"inline_keyboard": inline_keyboard}
         payload = {
             "chat_id": chat_id,
             "text": text,
@@ -1032,11 +1116,12 @@ class TelegramReminderService:
             return
 
         _, task_id, action_code = data.split(":")
-        status_key = self.ACTION_CODES.get(action_code)
-        if not status_key:
+        action = self.status_action_map.get(action_code)
+        if not action:
             if callback_id:
                 self.answer_callback(callback_id, "Действие не поддерживается", show_alert=True)
             return
+        status_key = action["key"]
 
         actor = callback.get("from") or {}
         base_log_entry: Dict[str, Any] = {

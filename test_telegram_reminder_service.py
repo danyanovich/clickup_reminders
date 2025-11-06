@@ -82,6 +82,7 @@ class TelegramReminderServiceTest(unittest.TestCase):
         mock_client_cls.return_value = MagicMock()
         session = DummySession()
         service = TelegramReminderService(self.config, self.credentials, session=session)
+        complete_code = next(action["code"] for action in service.status_actions if action["key"] == "ВЫПОЛНЕНО")
 
         with patch.object(service, "update_clickup_status") as update_status, patch.object(
             service, "fetch_task_details", return_value={"name": "Demo task"}
@@ -90,7 +91,7 @@ class TelegramReminderServiceTest(unittest.TestCase):
         ), patch.object(service, "_append_callback_log") as log_callback:
             callback = {
                 "id": "cb-1",
-                "data": "s:task-pending:d",
+                "data": f"s:task-pending:{complete_code}",
                 "message": {"chat": {"id": 42}, "message_id": 99},
             }
             service.handle_callback(callback)
@@ -116,6 +117,7 @@ class TelegramReminderServiceTest(unittest.TestCase):
         mock_client_cls.return_value = MagicMock()
         session = DummySession()
         service = TelegramReminderService(self.config, self.credentials, session=session)
+        complete_code = next(action["code"] for action in service.status_actions if action["key"] == "ВЫПОЛНЕНО")
 
         with patch.object(service, "update_clickup_status") as update_status, patch.object(
             service, "fetch_task_details", return_value={"name": "Demo task"}
@@ -124,7 +126,7 @@ class TelegramReminderServiceTest(unittest.TestCase):
         ), patch.object(service, "_append_callback_log") as log_callback:
             callback = {
                 "id": "cb-2",
-                "data": "s:task-pending:d",
+                "data": f"s:task-pending:{complete_code}",
                 "message": {"message_id": 55},
             }
             service.handle_callback(callback)
@@ -169,13 +171,14 @@ class TelegramReminderServiceTest(unittest.TestCase):
         mock_client_cls.return_value = MagicMock()
         session = DummySession()
         service = TelegramReminderService(self.config, self.credentials, session=session)
+        complete_code = next(action["code"] for action in service.status_actions if action["key"] == "ВЫПОЛНЕНО")
 
         with patch.object(service, "update_clickup_status", side_effect=RuntimeError("boom")), patch.object(
             service, "_persist_chat_id"
         ), patch.object(service, "_append_callback_log") as log_callback:
             callback = {
                 "id": "cb-err",
-                "data": "s:task-err:d",
+                "data": f"s:task-err:{complete_code}",
                 "message": {"chat": {"id": 99}, "message_id": 77},
             }
             service.handle_callback(callback)
