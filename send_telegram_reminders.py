@@ -36,7 +36,9 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         "--poll-seconds",
         type=float,
         default=0.0,
-        help="After sending reminders keep polling Telegram for callbacks during this duration (seconds).",
+        help=(
+            "Poll Telegram for callbacks before and after sending reminders during this duration (seconds)."
+        ),
     )
     return parser.parse_args(argv)
 
@@ -50,6 +52,14 @@ def main(argv: list[str] | None = None) -> int:
 
     try:
         service = TelegramReminderService.from_environment()
+        if args.poll_seconds > 0:
+            logging.info(
+                "Polling Telegram for callbacks during %.1f seconds before sending reminders...",
+                args.poll_seconds,
+            )
+            processed_before = service.poll_updates_for(duration=args.poll_seconds)
+            logging.info("Processed updates before sending: %s", processed_before)
+
         tasks = service.send_reminders(
             chat_id=args.chat_id,
             limit=args.limit,
@@ -57,11 +67,11 @@ def main(argv: list[str] | None = None) -> int:
         )
         if args.poll_seconds > 0:
             logging.info(
-                "Polling Telegram for callbacks during %.1f seconds...",
+                "Polling Telegram for callbacks during %.1f seconds after sending reminders...",
                 args.poll_seconds,
             )
-            processed = service.poll_updates_for(duration=args.poll_seconds)
-            logging.info("Processed updates while polling: %s", processed)
+            processed_after = service.poll_updates_for(duration=args.poll_seconds)
+            logging.info("Processed updates after sending: %s", processed_after)
     except ConfigurationError as exc:
         logging.error("Configuration error: %s", exc)
         return 2
