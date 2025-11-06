@@ -278,6 +278,12 @@ def _primary_assignee(task: Dict[str, Any]) -> str:
         name = first.get("username") or first.get("email") or first.get("name")
         if name:
             return str(name)
+    watchers = task.get("watchers") or []
+    if watchers and isinstance(watchers, list):
+        for watcher in watchers:
+            name = watcher.get("username") or watcher.get("email") or watcher.get("name")
+            if name:
+                return str(name)
     custom_fields = task.get("custom_fields") or []
     for field in custom_fields:
         if isinstance(field, dict) and field.get("name", "").lower() == "assignee":

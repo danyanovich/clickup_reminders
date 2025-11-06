@@ -31,7 +31,8 @@ class ClickUpClient:
         if not resolved_list_id:
             return []
 
-        response = self.session.get(f"{self.BASE_URL}/list/{resolved_list_id}/task")
+        params = {"include_assignees": "true"}
+        response = self.session.get(f"{self.BASE_URL}/list/{resolved_list_id}/task", params=params)
         response.raise_for_status()
         payload = response.json()
         tasks = payload.get("tasks", [])
@@ -68,7 +69,12 @@ class ClickUpClient:
         for variant in tag_variants:
             next_page: Optional[int] = 0
             while next_page is not None:
-                params: Dict[str, Any] = {"subtasks": "true", "page": next_page, "tags[]": variant}
+                params: Dict[str, Any] = {
+                    "subtasks": "true",
+                    "page": next_page,
+                    "tags[]": variant,
+                    "include_assignees": "true",
+                }
                 if space_ids:
                     params["space_ids[]"] = list(space_ids)
                 response = self.session.get(f"{self.BASE_URL}/team/{self.team_id}/task", params=params)
