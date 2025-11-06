@@ -303,7 +303,14 @@ class TelegramReminderService:
         self.session = session or requests.Session()
         self.bot_token = credentials["telegram_bot_token"]
         self.base_url = f"https://api.telegram.org/bot{self.bot_token}"
-        self.default_chat_id = credentials.get("telegram_chat_id") or self._load_cached_chat_id()
+
+        configured_chat = credentials.get("telegram_chat_id")
+        self._configured_default_chat = str(configured_chat) if configured_chat else None
+        cached_chat = self._load_cached_chat_id()
+        if self._configured_default_chat:
+            self.default_chat_id = self._configured_default_chat
+        else:
+            self.default_chat_id = cached_chat
 
         self.team_ids = self._resolve_team_ids()
         if not self.team_ids:
@@ -974,7 +981,7 @@ class TelegramReminderService:
         chat_id = str(chat.get("id"))
         text = (message.get("text") or "").strip().lower()
 
-        if chat_id:
+        if chat_id and not self._configured_default_chat:
             self.default_chat_id = chat_id
             self._persist_chat_id(chat_id)
 
@@ -1035,7 +1042,7 @@ class TelegramReminderService:
             "last_name": actor.get("last_name"),
         }
 
-        if chat_id:
+        if chat_id and not self._configured_default_chat:
             self.default_chat_id = chat_id
             self._persist_chat_id(chat_id)
 
