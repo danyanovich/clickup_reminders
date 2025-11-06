@@ -985,7 +985,7 @@ class TelegramReminderService:
                 self._dispatch_tasks_to_chat(str(target_chat), tasks)
                 return tasks
 
-            deliveries = self._group_tasks_by_chat(tasks, fallback_chat=None)
+            deliveries = self._group_tasks_by_chat(tasks, fallback_chat=str(target_chat))
             bucket = deliveries.get(str(target_chat), [])
             self._dispatch_tasks_to_chat(str(target_chat), bucket)
             return tasks
@@ -998,7 +998,8 @@ class TelegramReminderService:
                 LOGGER.info("No pending tasks and no Telegram chat configured to notify.")
             return []
 
-        deliveries = self._group_tasks_by_chat(tasks, fallback_chat=None)
+        fallback_chat = self._resolve_target_chat()
+        deliveries = self._group_tasks_by_chat(tasks, fallback_chat=fallback_chat)
         if not deliveries:
             LOGGER.warning(
                 "Не удалось сопоставить ни одну задачу с Telegram чатами исполнителей. "
