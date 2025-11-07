@@ -33,6 +33,9 @@ jobs:
       CLICKUP_SPACE_IDS: ${{ secrets.CLICKUP_SPACE_IDS }}
       TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
       TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+      TWILIO_ACCOUNT_SID: ${{ secrets.TWILIO_ACCOUNT_SID }}
+      TWILIO_AUTH_TOKEN: ${{ secrets.TWILIO_AUTH_TOKEN }}
+      TWILIO_PHONE_NUMBER: ${{ secrets.TWILIO_PHONE_NUMBER }}
       CONFIG_PATH: ${{ github.workspace }}/config.runtime.json
       BASE_DIR: ${{ github.workspace }}
       TZ: 'UTC'
@@ -93,6 +96,9 @@ jobs:
           [ -z "$CLICKUP_WORKSPACE_ID" ] && echo "ℹ️  CLICKUP_WORKSPACE_ID empty (ok if TEAM_ID is set)" || echo "ℹ️  CLICKUP_WORKSPACE_ID present"
           [ -z "$TELEGRAM_BOT_TOKEN" ] && echo "❌ TELEGRAM_BOT_TOKEN missing" || echo "✅ TELEGRAM_BOT_TOKEN set"
           [ -z "$TELEGRAM_CHAT_ID" ] && echo "ℹ️  TELEGRAM_CHAT_ID not set (will use config/cache if available)" || echo "ℹ️  TELEGRAM_CHAT_ID present"
+          [ -z "$TWILIO_ACCOUNT_SID" ] && echo "ℹ️  TWILIO_ACCOUNT_SID not set (will use config/secrets file)" || echo "ℹ️  TWILIO_ACCOUNT_SID present"
+          [ -z "$TWILIO_AUTH_TOKEN" ] && echo "ℹ️  TWILIO_AUTH_TOKEN not set (will use config/secrets file)" || echo "ℹ️  TWILIO_AUTH_TOKEN present"
+          [ -z "$TWILIO_PHONE_NUMBER" ] && echo "ℹ️  TWILIO_PHONE_NUMBER not set (will use config/secrets file)" || echo "ℹ️  TWILIO_PHONE_NUMBER present"
 
           # Enforce required secrets on schedule/manual runs; be lenient on push
           if [ "$GITHUB_EVENT_NAME" = "schedule" ] || [ "$GITHUB_EVENT_NAME" = "workflow_dispatch" ]; then

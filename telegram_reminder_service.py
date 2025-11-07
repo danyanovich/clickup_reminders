@@ -14,7 +14,7 @@ import logging
 import os
 import time
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
 
@@ -1417,7 +1417,18 @@ class TelegramReminderService:
             if callback_id:
                 self.answer_callback(callback_id, "Действие не поддерживается", show_alert=True)
             return
+        operation = action.get("operation")
+        postpone_hours_raw = action.get("postpone_hours")
+        postpone_hours: Optional[float] = None
+        if postpone_hours_raw is not None:
+            try:
+                postpone_hours = float(postpone_hours_raw)
+            except (TypeError, ValueError):
+                postpone_hours = None
+
         status_key = action["key"]
+
+        is_postpone_action = (operation == "postpone") and postpone_hours and postpone_hours > 0
 
         actor = callback.get("from") or {}
         base_log_entry: Dict[str, Any] = {
@@ -1439,9 +1450,12 @@ class TelegramReminderService:
             self._persist_chat_id(chat_id)
 
         try:
-            self.update_clickup_status(task_id, status_key)
+            if is_postpone_action:
+                self._postpone_task_due_date(task_id, postpone_hours)
+            else:
+                self.update_clickup_status(task_id, status_key)
         except Exception as exc:
-            LOGGER.error("Failed to update task %s status: %s", task_id, exc)
+            LOGGER.error("Failed to process workflow action for task %s: %s", task_id, exc)
             error_log = dict(base_log_entry)
             error_log["result"] = "error"
             error_log["error"] = str(exc)
@@ -1450,15 +1464,16 @@ class TelegramReminderService:
                 try:
                     self.answer_callback(
                         callback_id,
-                        "❌ Не удалось обновить задачу в ClickUp",
+                        "❌ Не удалось выполнить действие",
                         show_alert=True,
                     )
                 except Exception:  # pragma: no cover - best effort
                     pass
             if chat_id:
+                status_message = "перенести задачу" if is_postpone_action else "обновить задачу"
                 self.send_plain_message(
                     chat_id,
-                    f"⚠️ Не удалось обновить задачу <b>{task_id}</b>: {exc}",
+                    f"⚠️ Не удалось {status_message} <b>{task_id}</b>: {exc}",
                 )
             return
 
@@ -1474,6 +1489,8 @@ class TelegramReminderService:
         success_log = dict(base_log_entry)
         success_log["chat_id"] = str(chat_id) if chat_id else success_log["chat_id"]
         success_log["result"] = "success"
+        if is_postpone_action and postpone_hours:
+            success_log["postpone_hours"] = postpone_hours
         self._append_callback_log(success_log)
 
         if not chat_id:
@@ -1485,12 +1502,64 @@ class TelegramReminderService:
                 self.answer_callback(callback_id, "Готово!")
             except Exception as exc:  # pragma: no cover - network guard
                 LOGGER.debug("Failed to send callback ack for task %s: %s", task_id, exc)
+
         task_payload = self.fetch_task_details(task_id)
         task_name = task_payload.get("name", f"Задача {task_id}")
-        self.send_plain_message(
-            chat_id,
-            f"✅ Задача <b>{task_name}</b> отмечена как: <b>{status_key}</b>",
-        )
+
+        if is_postpone_action and postpone_hours:
+            due_raw = task_payload.get("due_date")
+            due_formatted = _format_due(due_raw, self.timezone_name)
+            hours_display = int(postpone_hours) if float(postpone_hours).is_integer() else postpone_hours
+            self.send_plain_message(
+                chat_id,
+                (
+                    f"⏱ Перенос выполнен! Задача <b>{task_name}</b> перенесена ещё на"
+                    f" <b>{hours_display}</b> ч. Новый срок: <b>{due_formatted}</b>"
+                ),
+            )
+        else:
+            self.send_plain_message(
+                chat_id,
+                f"✅ Задача <b>{task_name}</b> отмечена как: <b>{status_key}</b>",
+            )
+
+
+    def _postpone_task_due_date(
+        self,
+        task_id: str,
+        postpone_hours: Optional[float],
+    ) -> None:
+        if not postpone_hours or postpone_hours <= 0:
+            raise ValueError("postpone_hours must be positive")
+
+        payload = self.fetch_task_details(task_id)
+        due_raw = payload.get("due_date")
+        timezone_name = self.timezone_name or "UTC"
+        timezone = pytz.timezone(timezone_name)
+
+        if due_raw:
+            try:
+                current_due = datetime.fromtimestamp(int(due_raw) / 1000, timezone)
+            except Exception as exc:
+                LOGGER.warning("Failed to parse existing due date for task %s: %s", task_id, exc)
+                current_due = None
+        else:
+            current_due = None
+
+        now = datetime.now(timezone)
+        base_due = current_due if current_due and current_due > now else now
+        new_due = base_due + timedelta(hours=postpone_hours)
+        new_due_ms = int(new_due.timestamp() * 1000)
+
+        self.clickup_client.update_task(task_id, {"due_date": new_due_ms})
+
+        try:
+            self.clickup_client.add_comment(
+                task_id,
+                f"Дедлайн перенесён через Telegram-бота на {postpone_hours} ч, новый срок: {new_due.strftime('%Y-%m-%d %H:%M %Z')}",
+            )
+        except Exception as exc:
+            LOGGER.warning("Failed to add postpone comment for %s: %s", task_id, exc)
 
     def get_updates(self, offset: Optional[int] = None, timeout: int = 30) -> List[Dict[str, Any]]:
         payload: Dict[str, Any] = {"timeout": timeout}

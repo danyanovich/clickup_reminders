@@ -101,6 +101,14 @@ python3 send_twilio_calls.py --dry-run
 python3 send_twilio_calls.py --assignee "Alex"
 ```
 
+Для полноценной работы звонков и SMS в локальном запуске и GitHub Actions задайте секреты/переменные окружения:
+
+- `TWILIO_ACCOUNT_SID`
+- `TWILIO_AUTH_TOKEN`
+- `TWILIO_PHONE_NUMBER`
+
+В GitHub Actions эти значения передаются через secrets; пример placeholders добавлен в `config.example.json`.
+
 - Запуск основного голосового скрипта:
 ```bash
 # опционально: URL вебхуков (используется в некоторых сценариях)

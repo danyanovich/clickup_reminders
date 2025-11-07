@@ -7,6 +7,11 @@
   "phone_mapping": {
     "Alex": "+10000000000"
   },
+  "twilio": {
+    "account_sid": "<your_twilio_account_sid>",
+    "auth_token": "<your_twilio_auth_token>",
+    "phone_number": "+1234567890"
+  },
   "working_hours": {
     "start": 9,
     "end": 18
@@ -47,9 +52,18 @@
       "errors": true
     },
     "status_buttons": [
-      {"key": "ВЫПОЛНЕНО", "text": "✅ Выполнена"},
-      {"key": "В_РАБОТЕ", "text": "🔄 В работе"},
-      {"key": "ОТМЕНЕНА", "text": "🚫 Отменена"}
+      {
+        "key": "ВЫПОЛНЕНО",
+        "text": "✅ Выполнена",
+        "code": "done"
+      },
+      {
+        "key": "ПОЗЖЕ",
+        "text": "⏱ Перенести на 2 часа",
+        "code": "postpone_2h",
+        "operation": "postpone",
+        "postpone_hours": 2
+      }
     ],
     "buttons_per_row": 3
   }
