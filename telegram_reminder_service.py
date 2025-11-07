@@ -372,10 +372,7 @@ class TelegramReminderService:
             or "Напоминания"
         )
         self.space_ids = self._resolve_space_ids()
-        (
-            self.assignee_chat_map_by_name,
-            self.assignee_chat_map_by_id,
-        ) = self._build_assignee_chat_map()
+        self.assignee_chat_map_by_id = self._build_assignee_chat_map()
         self.status_actions = self._build_status_actions()
         self.status_action_map = {action["code"]: action for action in self.status_actions}
         self.status_action_by_key = {action["key"]: action for action in self.status_actions}
@@ -487,13 +484,12 @@ class TelegramReminderService:
             seen.add(normalized)
         return tags
 
-    def _build_assignee_chat_map(self) -> Tuple[Dict[str, Tuple[str, ...]], Dict[str, Tuple[str, ...]]]:
+    def _build_assignee_chat_map(self) -> Dict[str, Tuple[str, ...]]:
         telegram_cfg = self.config.get("telegram") or {}
         mapping_cfg = telegram_cfg.get("assignee_chat_map") or telegram_cfg.get("assignee_chats") or {}
         if not isinstance(mapping_cfg, dict):
-            return {}, {}
+            return {}
 
-        names_map: Dict[str, Tuple[str, ...]] = {}
         ids_map: Dict[str, Tuple[str, ...]] = {}
 
         for raw_name, raw_chat_ids in mapping_cfg.items():
@@ -582,18 +578,13 @@ class TelegramReminderService:
                         id_candidate = candidate
                 if id_candidate:
                     ids_map[id_candidate] = chat_tuple
-                    continue
-
-                normalized = self._normalize_assignee_name(token)
-                if normalized:
-                    names_map[normalized] = chat_tuple
 
             for identifier in explicit_ids:
                 identifier_str = str(identifier).strip()
                 if identifier_str:
                     ids_map[identifier_str] = chat_tuple
 
-        return names_map, ids_map
+        return ids_map
 
     def _build_phone_mapping(self) -> Dict[str, str]:
         """
@@ -752,21 +743,6 @@ class TelegramReminderService:
             direct_by_id = self.assignee_chat_map_by_id.get(assignee_id)
             if direct_by_id:
                 return direct_by_id
-
-        assignee = self._normalize_assignee_name(task.assignee)
-        if not assignee:
-            return ()
-
-        direct_mapping = self.assignee_chat_map_by_name.get(assignee)
-        if direct_mapping:
-            return direct_mapping
-
-        if "(" in assignee:
-            trimmed = assignee.split("(", 1)[0].strip()
-            if trimmed:
-                normalized_trimmed = self._normalize_assignee_name(trimmed)
-                if normalized_trimmed and normalized_trimmed in self.assignee_chat_map_by_name:
-                    return self.assignee_chat_map_by_name[normalized_trimmed]
 
         return ()
 
@@ -1081,22 +1057,18 @@ class TelegramReminderService:
     def _group_tasks_by_chat(
         self,
         tasks: Sequence[ReminderTask],
-        fallback_chat: Optional[str],
     ) -> Dict[str, List[ReminderTask]]:
         deliveries: Dict[str, List[ReminderTask]] = {}
 
         for task in tasks:
             chat_ids = self._chat_targets_for_task(task)
             if not chat_ids:
-                if fallback_chat:
-                    chat_ids = (fallback_chat,)
-                else:
-                    LOGGER.warning(
-                        "No Telegram chat mapping for assignee '%s' (task %s). Skipping.",
-                        task.assignee,
-                        task.task_id,
-                    )
-                    continue
+                LOGGER.warning(
+                    "No Telegram chat mapping for assignee '%s' (task %s). Skipping.",
+                    task.assignee,
+                    task.task_id,
+                )
+                continue
 
             seen: set[str] = set()
             for chat_id in chat_ids:
@@ -1156,25 +1128,17 @@ class TelegramReminderService:
                 return tasks
 
             target_chat_str = str(target_chat)
-            deliveries = self._group_tasks_by_chat(tasks, fallback_chat=None)
+            deliveries = self._group_tasks_by_chat(tasks)
             bucket = deliveries.get(target_chat_str, [])
-
-            if not bucket and self.default_chat_id and str(self.default_chat_id) == target_chat_str:
-                bucket = [task for task in tasks if not self._chat_targets_for_task(task)]
 
             self._dispatch_tasks_to_chat(target_chat_str, bucket)
             return tasks
 
         if not tasks:
-            fallback_chat = self._resolve_target_chat()
-            if fallback_chat:
-                self._dispatch_tasks_to_chat(fallback_chat, [])
-            else:
-                LOGGER.info("No pending tasks and no Telegram chat configured to notify.")
+            LOGGER.info("No pending tasks to send.")
             return []
 
-        fallback_chat = self._resolve_target_chat()
-        deliveries = self._group_tasks_by_chat(tasks, fallback_chat=fallback_chat)
+        deliveries = self._group_tasks_by_chat(tasks)
         if not deliveries:
             LOGGER.warning(
                 "Не удалось сопоставить ни одну задачу с Telegram чатами исполнителей. "

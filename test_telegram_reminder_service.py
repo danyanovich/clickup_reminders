@@ -211,8 +211,8 @@ class TelegramReminderServiceTest(unittest.TestCase):
             "working_hours": {"timezone": "Europe/Lisbon"},
             "telegram": {
                 "assignee_chat_map": {
-                    "Alex": "chat-alex",
-                    "Eve|Ева": ["chat-eve-1", "chat-eve-2"],
+                    "Alex|111": "chat-alex",
+                    "Eve|Ева|222": ["chat-eve-1", "chat-eve-2"],
                     "555555": "chat-id-only",
                 }
             },
@@ -226,8 +226,24 @@ class TelegramReminderServiceTest(unittest.TestCase):
 
         service = TelegramReminderService(config, credentials, session=session)
         tasks = [
-            ReminderTask(task_id="1", name="Task Alex", status="todo", due_human="2024-01-01 10:00", assignee="Alex", url="url-1"),
-            ReminderTask(task_id="2", name="Task Eve", status="todo", due_human="2024-01-02 10:00", assignee="Ева", url="url-2"),
+            ReminderTask(
+                task_id="1",
+                name="Task Alex",
+                status="todo",
+                due_human="2024-01-01 10:00",
+                assignee="Alex",
+                url="url-1",
+                assignee_id="111",
+            ),
+            ReminderTask(
+                task_id="2",
+                name="Task Eve",
+                status="todo",
+                due_human="2024-01-02 10:00",
+                assignee="Ева",
+                url="url-2",
+                assignee_id="222",
+            ),
             ReminderTask(task_id="3", name="Task Unknown", status="todo", due_human="2024-01-03 10:00", assignee="—", url="url-3"),
             ReminderTask(
                 task_id="4",
@@ -249,7 +265,7 @@ class TelegramReminderServiceTest(unittest.TestCase):
             chat = call["json"]["chat_id"]
             messages_by_chat.setdefault(chat, []).append(call["json"]["text"])
 
-        expected_chats = {"chat-alex", "chat-eve-1", "chat-eve-2", "chat-id-only", "fallback-chat"}
+        expected_chats = {"chat-alex", "chat-eve-1", "chat-eve-2", "chat-id-only"}
         self.assertEqual(set(messages_by_chat.keys()), expected_chats)
 
         for chat_id in {"chat-alex", "chat-eve-1", "chat-eve-2"}:
@@ -265,8 +281,7 @@ class TelegramReminderServiceTest(unittest.TestCase):
         self.assertIn("Task Eve", messages_by_chat["chat-eve-2"][1])
         self.assertEqual(len(messages_by_chat["chat-id-only"]), 2)
         self.assertIn("Task IdOnly", messages_by_chat["chat-id-only"][1])
-        self.assertGreaterEqual(len(messages_by_chat["fallback-chat"]), 1)
-        self.assertIn("Task Unknown", " ".join(messages_by_chat["fallback-chat"]))
+        self.assertNotIn("Task Unknown", " ".join("\n".join(messages) for messages in messages_by_chat.values()))
 
     @patch("telegram_reminder_service.ClickUpClient")
     def test_send_reminders_broadcast_all_when_overridden(self, mock_client_cls):
@@ -327,7 +342,7 @@ class TelegramReminderServiceTest(unittest.TestCase):
             "working_hours": {"timezone": "Europe/Lisbon"},
             "telegram": {
                 "assignee_chat_map": {
-                    "Alex": "chat-alex",
+                    "Alex|111": "chat-alex",
                 }
             },
         }
@@ -346,6 +361,7 @@ class TelegramReminderServiceTest(unittest.TestCase):
                 status="todo",
                 due_human="2024-01-01 10:00",
                 assignee="Alex",
+                assignee_id="111",
                 url="url-1",
             ),
             ReminderTask(
@@ -450,6 +466,7 @@ class TelegramReminderServiceTest(unittest.TestCase):
                 status="todo",
                 due_human="2024-01-01 10:00",
                 assignee="Alex",
+                assignee_id="111",
                 url="url-1",
             ),
             ReminderTask(
