@@ -33,7 +33,7 @@ jobs:
       CLICKUP_SPACE_IDS: ${{ secrets.CLICKUP_SPACE_IDS }}
       TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
       TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
-      CONFIG_PATH: ${{ github.workspace }}/config.example.json
+      CONFIG_PATH: ${{ github.workspace }}/config.json
       BASE_DIR: ${{ github.workspace }}
       TZ: 'UTC'
 
