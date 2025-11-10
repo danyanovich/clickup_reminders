@@ -55,6 +55,7 @@ class ReminderTask:
     assignee: str
     url: str
     assignee_id: Optional[str] = None
+    description: Optional[str] = None
 
 
 def _load_json(path: Path) -> Dict[str, Any]:
@@ -1090,6 +1091,12 @@ class TelegramReminderService:
                     assignee=assignee_name,
                     assignee_id=assignee_id,
                     url=f"https://app.clickup.com/t/{task['id']}",
+                    description=str(
+                        task.get("description")
+                        or task.get("text_content")
+                        or task.get("text")
+                        or ""
+                    ).strip() or None,
                 )
             )
 
