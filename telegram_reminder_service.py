@@ -513,6 +513,16 @@ class TelegramReminderService:
         channels = self._channels_for_assignee(task.assignee, task.assignee_id)
         if channels:
             return channel in channels
+
+        description = getattr(task, "description", "")
+        if isinstance(description, str) and description:
+            description_lower = description.lower()
+            for alias in ("alex", "алекс"):
+                if alias in description_lower:
+                    alias_channels = self.channel_preferences.get(alias)
+                    if alias_channels:
+                        return channel in alias_channels
+        
         # default behaviour: telegram enabled, twilio only if phone mapping exists
         if channel == "telegram":
             return True
