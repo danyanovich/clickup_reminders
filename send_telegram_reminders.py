@@ -41,6 +41,15 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
             "Pass 0 to skip polling."
         ),
     )
+    parser.add_argument(
+        "--final-poll-seconds",
+        type=float,
+        default=10.0,
+        help=(
+            "Extra polling window (seconds) after the main run to wait for user actions "
+            "before exiting. Pass 0 to disable the final wait."
+        ),
+    )
     return parser.parse_args(argv)
 
 
@@ -54,6 +63,7 @@ def main(argv: list[str] | None = None) -> int:
     try:
         service = TelegramReminderService.from_environment()
         service.ensure_callback_comments()
+        processed_total = 0
         if args.poll_seconds > 0:
             logging.info(
                 "Polling Telegram for callbacks during %.1f seconds before sending reminders...",
@@ -61,6 +71,7 @@ def main(argv: list[str] | None = None) -> int:
             )
             processed_before = service.poll_updates_for(duration=args.poll_seconds)
             logging.info("Processed updates before sending: %s", processed_before)
+            processed_total += processed_before
 
         tasks = service.send_reminders(
             chat_id=args.chat_id,
@@ -74,6 +85,57 @@ def main(argv: list[str] | None = None) -> int:
             )
             processed_after = service.poll_updates_for(duration=args.poll_seconds)
             logging.info("Processed updates after sending: %s", processed_after)
+            processed_total += processed_after
+
+        if args.final_poll_seconds > 0:
+            logging.info(
+                "Final polling window for %.1f seconds to capture late user actions...",
+                args.final_poll_seconds,
+            )
+            processed_final = service.poll_updates_for(duration=args.final_poll_seconds)
+            logging.info("Processed updates during final wait: %s", processed_final)
+            processed_total += processed_final
+
+        if processed_total == 0:
+            logging.info("No Telegram actions detected; triggering Twilio voice fallback for Alex.")
+            try:
+                deliveries = service.send_voice_reminders(assignees=["Alex"], limit=args.limit)
+            except ConfigurationError as exc:
+                logging.warning("Twilio fallback skipped due to configuration issue: %s", exc)
+            except Exception as exc:  # pragma: no cover - defensive automation guard
+                logging.exception("Twilio fallback failed: %s", exc)
+            else:
+                if deliveries:
+                    logging.info("Twilio fallback completed: %s call(s) initiated.", len(deliveries))
+                    summary_lines = [
+                        "📞 Alex не ответил(а) в Telegram — запущен звонок:",
+                    ]
+                    for delivery in deliveries:
+                        assignees = ", ".join(delivery.get("assignees") or ["—"])
+                        call_result = delivery.get("call_result")
+                        if call_result is None:
+                            status_text = "без данных"
+                        elif getattr(call_result, "success", False):
+                            status_text = "успех"
+                        else:
+                            error = getattr(call_result, "error", None) or getattr(call_result, "status", "ошибка")
+                            status_text = f"ошибка ({error})"
+                        summary_lines.append(f"• {assignees} — {status_text}")
+
+                    target_chat = args.chat_id or getattr(service, "default_chat_id", None)
+                    if not target_chat:
+                        try:
+                            target_chat = service._resolve_target_chat()  # pylint: disable=protected-access
+                        except Exception:  # pragma: no cover - best effort
+                            target_chat = None
+
+                    if target_chat:
+                        try:
+                            service.send_plain_message(target_chat, "\n".join(summary_lines))
+                        except Exception as exc:  # pragma: no cover - best effort
+                            logging.warning("Failed to send fallback summary to Telegram: %s", exc)
+                else:
+                    logging.info("Twilio fallback completed: нет задач для звонков.")
     except ConfigurationError as exc:
         logging.error("Configuration error: %s", exc)
         return 2

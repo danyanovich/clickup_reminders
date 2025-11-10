@@ -796,6 +796,19 @@ class TelegramReminderService:
             if direct_by_name:
                 return direct_by_name
 
+        if normalized_name in {"alex", "алекс"}:
+            alex_chat = self.assignee_chat_map_by_name.get("алекс") or self.assignee_chat_map_by_name.get("alex")
+            if alex_chat:
+                return alex_chat
+
+        description_lower = getattr(task, "description", "")
+        if isinstance(description_lower, str):
+            description_lower = description_lower.lower()
+            if "алекс" in description_lower or "alex" in description_lower:
+                alex_chat = self.assignee_chat_map_by_name.get("алекс") or self.assignee_chat_map_by_name.get("alex")
+                if alex_chat:
+                    return alex_chat
+
         return ()
 
     @staticmethod
