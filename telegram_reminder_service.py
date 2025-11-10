@@ -1368,15 +1368,25 @@ class TelegramReminderService:
 
         for task in tasks:
             normalized = self._normalize_assignee_name(task.assignee)
-            if allowed_assignees is not None and normalized not in allowed_assignees:
+            recipient_alias = self._resolve_twilio_recipient(task)
+
+            candidate_aliases = {alias for alias in (normalized, recipient_alias) if alias}
+            if allowed_assignees is not None and (
+                not candidate_aliases or candidate_aliases.isdisjoint(allowed_assignees)
+            ):
                 continue
 
-            phone = self.phone_mapping.get(normalized)
+            phone_key = recipient_alias or normalized
+            if not phone_key:
+                skipped.append(task.assignee or task.task_id)
+                continue
+
+            phone = self.phone_mapping.get(phone_key)
+            if not phone and recipient_alias and normalized and normalized != recipient_alias:
+                phone = self.phone_mapping.get(normalized)
+
             if not phone:
-                if task.assignee:
-                    skipped.append(task.assignee)
-                else:
-                    skipped.append(task.task_id)
+                skipped.append(task.assignee or task.task_id)
                 continue
 
             grouped.setdefault(phone, []).append(task)
