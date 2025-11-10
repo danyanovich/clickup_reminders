@@ -13,7 +13,7 @@ on:
         default: 'false'
   
   schedule:
-    - cron: "0 * * * *"  # Каждый час (в начале часа, по UTC)
+    - cron: "0 10-18 * * 1-5"  # Еженедельно по будням, 10:00–18:00 (UTC ≈ Lisbon winter time)
   
   push:
     branches:
