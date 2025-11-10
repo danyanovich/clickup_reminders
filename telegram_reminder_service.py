@@ -393,6 +393,7 @@ class TelegramReminderService:
         self.callback_log_path = self._resolve_callback_log_path()
         self._processed_callback_ids: set[str] = self._load_processed_callback_ids()
         self.phone_mapping = self._build_phone_mapping()
+        self.channel_preferences = self._build_channel_preferences()
         self.twilio_service: Optional[TwilioService] = None
         self.twilio_from_phone: Optional[str] = None
         self._webhook_cleared = False
@@ -453,6 +454,72 @@ class TelegramReminderService:
         mapping.setdefault("НА_ДОРАБОТКЕ", clickup_section.get("callback_status", "на доработке"))
         mapping.setdefault("ОТМЕНЕНА", clickup_section.get("cancelled_status", "отменена"))
         return mapping
+
+    def _build_channel_preferences(self) -> Dict[str, Tuple[str, ...]]:
+        telegram_cfg = self.config.get("telegram") or {}
+        raw_channels = telegram_cfg.get("channels") or {}
+        if not isinstance(raw_channels, dict):
+            return {}
+
+        preferences: Dict[str, Tuple[str, ...]] = {}
+        for raw_name, raw_values in raw_channels.items():
+            if raw_name is None:
+                continue
+
+            if isinstance(raw_name, str):
+                aliases = [part.strip() for part in raw_name.split("|") if part.strip()]
+            else:
+                aliases = [str(raw_name).strip()]
+
+            if isinstance(raw_values, str):
+                values_iterable = [raw_values]
+            elif isinstance(raw_values, (list, tuple, set)):
+                values_iterable = raw_values
+            else:
+                continue
+
+            normalized_channels: List[str] = []
+            for entry in values_iterable:
+                channel = str(entry).strip().lower()
+                if channel and channel not in normalized_channels:
+                    normalized_channels.append(channel)
+
+            if not normalized_channels:
+                continue
+
+            channel_tuple = tuple(normalized_channels)
+            for alias in aliases:
+                normalized_alias = self._normalize_assignee_name(alias)
+                if normalized_alias:
+                    preferences[normalized_alias] = channel_tuple
+
+        return preferences
+
+    def _channels_for_assignee(self, name: str, assignee_id: Optional[str]) -> Tuple[str, ...]:
+        normalized = self._normalize_assignee_name(name)
+        if normalized:
+            channels = self.channel_preferences.get(normalized)
+            if channels:
+                return channels
+
+        if assignee_id:
+            direct = self.channel_preferences.get(str(assignee_id).strip().lower())
+            if direct:
+                return direct
+
+        return ()
+
+    def _channel_enabled(self, channel: str, task: ReminderTask) -> bool:
+        channels = self._channels_for_assignee(task.assignee, task.assignee_id)
+        if channels:
+            return channel in channels
+        # default behaviour: telegram enabled, twilio only if phone mapping exists
+        if channel == "telegram":
+            return True
+        if channel == "twilio":
+            normalized = self._normalize_assignee_name(task.assignee)
+            return bool(normalized and normalized in self.phone_mapping)
+        return False
 
     def _build_completed_statuses(self) -> set[str]:
         statuses = {self.status_mapping.get("ВЫПОЛНЕНО", "complete").lower()}
@@ -792,6 +859,8 @@ class TelegramReminderService:
 
         normalized_name = self._normalize_assignee_name(task.assignee)
         if normalized_name:
+            if not self._channel_enabled("telegram", task):
+                return ()
             direct_by_name = self.assignee_chat_map_by_name.get(normalized_name)
             if direct_by_name:
                 return direct_by_name
@@ -1181,7 +1250,8 @@ class TelegramReminderService:
         limit: Optional[int] = None,
         broadcast_all: bool = False,
     ) -> List[ReminderTask]:
-        tasks = self.fetch_pending_tasks(limit=limit)
+        all_tasks = self.fetch_pending_tasks(limit=limit)
+        telegram_tasks = [task for task in all_tasks if self._channel_enabled("telegram", task)]
 
         if chat_id is not None:
             target_chat = self._resolve_target_chat(chat_id)
@@ -1190,21 +1260,25 @@ class TelegramReminderService:
                     "Chat id not supplied. Отправьте /start боту или передайте --chat-id для send_telegram_reminders.py."
                 )
             if broadcast_all:
-                self._dispatch_tasks_to_chat(str(target_chat), tasks)
-                return tasks
+                self._dispatch_tasks_to_chat(str(target_chat), telegram_tasks)
+                return telegram_tasks
 
             target_chat_str = str(target_chat)
-            deliveries = self._group_tasks_by_chat(tasks)
+            deliveries = self._group_tasks_by_chat(telegram_tasks)
             bucket = deliveries.get(target_chat_str, [])
 
             self._dispatch_tasks_to_chat(target_chat_str, bucket)
-            return tasks
+            return telegram_tasks
 
-        if not tasks:
+        if not telegram_tasks:
             LOGGER.info("No pending tasks to send.")
             return []
 
-        deliveries = self._group_tasks_by_chat(tasks)
+        deliveries = {
+            chat: [task for task in bucket if self._channel_enabled("telegram", task)]
+            for chat, bucket in self._group_tasks_by_chat(telegram_tasks).items()
+        }
+        deliveries = {chat: bucket for chat, bucket in deliveries.items() if bucket}
         if not deliveries:
             LOGGER.warning(
                 "Не удалось сопоставить ни одну задачу с Telegram чатами исполнителей. "
@@ -1215,7 +1289,7 @@ class TelegramReminderService:
         for target_chat, bucket in deliveries.items():
             self._dispatch_tasks_to_chat(target_chat, bucket)
 
-        return tasks
+        return telegram_tasks
 
     def send_voice_reminders(
         self,
@@ -1251,7 +1325,7 @@ class TelegramReminderService:
                     "Не удалось сопоставить указанных исполнителей с phone_mapping. Проверьте написание имён."
                 )
 
-        tasks = self.fetch_pending_tasks(limit=limit)
+        tasks = [task for task in self.fetch_pending_tasks(limit=limit) if self._channel_enabled("twilio", task)]
         if not tasks:
             LOGGER.info("Нет задач для голосовых напоминаний.")
             return []
