@@ -86,6 +86,8 @@ jobs:
           pip install -r requirements.txt
 
       - name: Run automated checks
+        env:
+          PYTHONPATH: .
         run: |
           set -e
           pytest --maxfail=1 --disable-warnings -q test_telegram_reminder_service.py test_status_mapping.py
