@@ -122,12 +122,7 @@ def main(argv: list[str] | None = None) -> int:
                             status_text = f"ошибка ({error})"
                         summary_lines.append(f"• {assignees} — {status_text}")
 
-                    target_chat = args.chat_id or getattr(service, "default_chat_id", None)
-                    if not target_chat:
-                        try:
-                            target_chat = service._resolve_target_chat()  # pylint: disable=protected-access
-                        except Exception:  # pragma: no cover - best effort
-                            target_chat = None
+                    target_chat = service.resolve_summary_chat(args.chat_id)
 
                     if target_chat:
                         try:

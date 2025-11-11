@@ -142,6 +142,147 @@ class TelegramReminderServiceTest(unittest.TestCase):
         self.assertEqual("42", send_payload["chat_id"])
 
     @patch("telegram_reminder_service.ClickUpClient")
+    def test_resolve_summary_chat_prefers_group(self, mock_client_cls):
+        mock_client_cls.return_value = MagicMock()
+        session = DummySession()
+        config = {
+            **self.config,
+            "telegram": {
+                "group_chat_id": "-100",
+                "enabled": True,
+            },
+        }
+        credentials = {
+            **self.credentials,
+            "telegram_group_chat_id": "-100",
+        }
+
+        with patch("telegram_reminder_service.LOGGER") as mock_logger:
+            service = TelegramReminderService(config, credentials, session=session)
+            resolved = service.resolve_summary_chat()
+
+        self.assertEqual("-100", resolved)
+        info_messages = [args[0] for args, _ in mock_logger.info.call_args_list]
+        self.assertTrue(any("Summary notifications will be sent" in msg for msg in info_messages))
+
+    @patch("telegram_reminder_service.ClickUpClient")
+    def test_resolve_summary_chat_override(self, mock_client_cls):
+        mock_client_cls.return_value = MagicMock()
+        session = DummySession()
+        config = {
+            **self.config,
+            "telegram": {
+                "enabled": True,
+            },
+        }
+        with patch("telegram_reminder_service.LOGGER") as mock_logger:
+            service = TelegramReminderService(config, self.credentials, session=session)
+            resolved = service.resolve_summary_chat("777")
+
+        self.assertEqual("777", resolved)
+        debug_messages = [args[0] for args, _ in mock_logger.debug.call_args_list]
+        self.assertTrue(any("Summary chat override" in msg for msg in debug_messages))
+
+    @patch("telegram_reminder_service.ClickUpClient")
+    def test_warns_when_config_chat_differs(self, mock_client_cls):
+        mock_client_cls.return_value = MagicMock()
+        session = DummySession()
+        config = {
+            **self.config,
+            "telegram": {
+                "chat_id": "11",
+                "group_chat_id": "-100",
+                "enabled": True,
+            },
+        }
+        credentials = {
+            **self.credentials,
+            "telegram_chat_id": "22",
+            "telegram_group_chat_id": "-50",
+        }
+
+        with patch("telegram_reminder_service.LOGGER") as mock_logger:
+            TelegramReminderService(config, credentials, session=session)
+
+        warning_messages = [args[0] for args, _ in mock_logger.warning.call_args_list]
+        self.assertTrue(any("differs" in msg for msg in warning_messages))
+
+    @patch("telegram_reminder_service.ClickUpClient")
+    def test_chat_shortcuts_use_group_chat_url(self, mock_client_cls):
+        mock_client_cls.return_value = MagicMock()
+        session = DummySession()
+        config = {
+            **self.config,
+            "telegram": {
+                "enabled": True,
+                "group_chat_url": "https://t.me/example_group",
+                "status_buttons": [
+                    {
+                        "key": "ВЫПОЛНЕНО",
+                        "text": "✅ Выполнена",
+                        "code": "done",
+                    }
+                ],
+                "chat_shortcuts": [
+                    {"text": "💬 К группе", "type": "group_chat"},
+                    {"text": "ℹ️ Инструкция", "type": "url", "url": "https://example.com"},
+                ],
+            },
+        }
+
+        service = TelegramReminderService(config, self.credentials, session=session)
+
+        self.assertEqual(
+            [
+                {"text": "💬 К группе", "url": "https://t.me/example_group"},
+                {"text": "ℹ️ Инструкция", "url": "https://example.com"},
+            ],
+            service.chat_shortcuts,
+        )
+
+    @patch("telegram_reminder_service.ClickUpClient")
+    def test_send_task_message_appends_shortcuts_row(self, mock_client_cls):
+        mock_client_cls.return_value = MagicMock()
+        session = DummySession()
+        config = {
+            **self.config,
+            "telegram": {
+                "enabled": True,
+                "group_chat_url": "https://t.me/example_group",
+                "status_buttons": [
+                    {
+                        "key": "ВЫПОЛНЕНО",
+                        "text": "✅ Выполнена",
+                        "code": "done",
+                    }
+                ],
+                "chat_shortcuts": [
+                    {"text": "💬 К группе", "type": "group_chat"},
+                ],
+            },
+        }
+
+        service = TelegramReminderService(config, self.credentials, session=session)
+        task = ReminderTask(
+            task_id="task-42",
+            name="Проверить отчёт",
+            status="в работе",
+            due_human="2025-01-01 10:00",
+            assignee="Alex",
+            url="https://app.clickup.com/t/task-42",
+        )
+
+        service.send_task_message("42", task, 1)
+
+        payload = session.calls[-1]["json"]
+        inline_keyboard = payload["reply_markup"]["inline_keyboard"]
+        shortcut_row = inline_keyboard[-1]
+        self.assertEqual("💬 К группе", shortcut_row[0]["text"])
+        self.assertEqual("https://t.me/example_group", shortcut_row[0]["url"])
+        self.assertEqual("s:task-42:done", inline_keyboard[0][0]["callback_data"])
+
+
+    @patch("telegram_reminder_service.ClickUpClient")
     def test_fetch_pending_tasks_with_tags_deduplicates(self, mock_client_cls):
         mock_client = MagicMock()
         mock_client.fetch_tasks_by_tag.side_effect = [

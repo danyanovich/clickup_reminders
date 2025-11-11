@@ -13,10 +13,10 @@ import json
 import logging
 import os
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from pathlib import Path
-from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
+from typing import Any, Dict, Iterable, List, Optional, Sequence, Set, Tuple
 
 import pytz
 import requests
@@ -56,6 +56,25 @@ class ReminderTask:
     url: str
     assignee_id: Optional[str] = None
     description: Optional[str] = None
+
+
+@dataclass
+class DeliveryStats:
+    timestamp: datetime
+    timezone: str
+    total_tasks: int
+    delivered_tasks: int
+    per_chat_counts: Dict[str, int]
+    per_chat_assignees: Dict[str, List[str]]
+    missing_tasks: int
+    broadcast_all: bool
+    requested_chat: Optional[str]
+    callbacks_processed: int = 0
+    voice_calls: int = 0
+    voice_failures: int = 0
+    sms_sent: int = 0
+    user_actions: List[str] = field(default_factory=list)
+    failed_actions: List[str] = field(default_factory=list)
 
 
 def _load_json(path: Path) -> Dict[str, Any]:
@@ -141,6 +160,8 @@ def load_runtime_credentials(config: Dict[str, Any]) -> Dict[str, Any]:
         "clickup_space_ids": os.getenv("CLICKUP_SPACE_IDS"),
         "telegram_bot_token": os.getenv("TELEGRAM_BOT_TOKEN"),
         "telegram_chat_id": os.getenv("TELEGRAM_CHAT_ID") or (config.get("telegram", {}) or {}).get("chat_id"),
+        "telegram_group_chat_id": os.getenv("TELEGRAM_GROUP_CHAT_ID")
+        or (config.get("telegram", {}) or {}).get("group_chat_id"),
         "twilio_account_sid": os.getenv("TWILIO_ACCOUNT_SID"),
         "twilio_auth_token": os.getenv("TWILIO_AUTH_TOKEN"),
         "twilio_phone_number": os.getenv("TWILIO_PHONE_NUMBER"),
@@ -224,6 +245,10 @@ def load_runtime_credentials(config: Dict[str, Any]) -> Dict[str, Any]:
             "telegram_chat_id": (
                 ("telegram", "chat_id"),
                 ("telegram", "secrets", "chat_id"),
+            ),
+            "telegram_group_chat_id": (
+                ("telegram", "group_chat_id"),
+                ("telegram", "secrets", "group_chat_id"),
             ),
             "twilio_account_sid": (
                 ("twilio", "account_sid"),
@@ -343,16 +368,38 @@ class TelegramReminderService:
         self.config = config
         self.credentials = credentials
         self.session = session or requests.Session()
+        self.telegram_config = self.config.get("telegram") or {}
+        config_chat_raw = self.telegram_config.get("chat_id")
+        self._config_chat_id = str(config_chat_raw).strip() if config_chat_raw is not None else None
+        if self._config_chat_id == "":
+            self._config_chat_id = None
+        config_group_chat_raw = self.telegram_config.get("group_chat_id")
+        self._config_group_chat_id = (
+            str(config_group_chat_raw).strip() if config_group_chat_raw is not None else None
+        )
+        if self._config_group_chat_id == "":
+            self._config_group_chat_id = None
+        group_chat_url_raw = self.telegram_config.get("group_chat_url")
+        self.group_chat_url = str(group_chat_url_raw).strip() if group_chat_url_raw else None
         self.bot_token = credentials["telegram_bot_token"]
         self.base_url = f"https://api.telegram.org/bot{self.bot_token}"
 
         configured_chat = credentials.get("telegram_chat_id")
-        self._configured_default_chat = str(configured_chat) if configured_chat else None
+        self._configured_default_chat = str(configured_chat).strip() if configured_chat else None
         cached_chat = self._load_cached_chat_id()
         if self._configured_default_chat:
             self.default_chat_id = self._configured_default_chat
         else:
             self.default_chat_id = cached_chat
+
+        configured_group_chat = credentials.get("telegram_group_chat_id") or self.telegram_config.get(
+            "group_chat_id"
+        )
+        if configured_group_chat is not None:
+            group_chat_str = str(configured_group_chat).strip()
+            self.group_chat_id = group_chat_str or None
+        else:
+            self.group_chat_id = None
 
         self.team_ids = self._resolve_team_ids()
         if not self.team_ids:
@@ -385,6 +432,7 @@ class TelegramReminderService:
         self.status_actions = self._build_status_actions()
         self.status_action_map = {action["code"]: action for action in self.status_actions}
         self.status_action_by_key = {action["key"]: action for action in self.status_actions}
+        self.chat_shortcuts = self._build_chat_shortcuts()
         for action in self.status_actions:
             if action["key"] not in self.status_mapping:
                 normalized = action["key"].replace("_", " ").lower()
@@ -401,10 +449,15 @@ class TelegramReminderService:
         self.phone_mapping = self._build_phone_mapping()
         self._apply_phone_overrides()
         self.channel_preferences = self._build_channel_preferences()
+        self.channel_defaults = self._build_channel_defaults()
         self.twilio_service: Optional[TwilioService] = None
         self.twilio_from_phone: Optional[str] = None
         self._webhook_cleared = False
         self._init_twilio_service()
+        self._last_delivery_stats: Optional[DeliveryStats] = None
+        self._recent_user_actions: List[str] = []
+        self._recent_failed_actions: List[str] = []
+        self._warn_chat_configuration()
 
     @classmethod
     def from_environment(cls) -> "TelegramReminderService":
@@ -472,6 +525,21 @@ class TelegramReminderService:
             if normalized_alias:
                 self.phone_mapping[normalized_alias] = override_alex
 
+    @staticmethod
+    def _normalize_channel_name(channel: str) -> Optional[str]:
+        if not channel:
+            return None
+        normalized = str(channel).strip().lower()
+        if not normalized:
+            return None
+        if normalized in {"telegram", "tg"}:
+            return "telegram"
+        if normalized in {"voice", "call", "twilio", "phone"}:
+            return "voice"
+        if normalized in {"sms", "text", "message"}:
+            return "sms"
+        return normalized
+
     def _build_channel_preferences(self) -> Dict[str, Tuple[str, ...]]:
         telegram_cfg = self.config.get("telegram") or {}
         raw_channels = telegram_cfg.get("channels") or {}
@@ -497,7 +565,7 @@ class TelegramReminderService:
 
             normalized_channels: List[str] = []
             for entry in values_iterable:
-                channel = str(entry).strip().lower()
+                channel = self._normalize_channel_name(entry)
                 if channel and channel not in normalized_channels:
                     normalized_channels.append(channel)
 
@@ -512,6 +580,25 @@ class TelegramReminderService:
 
         return preferences
 
+    def _build_channel_defaults(self) -> Tuple[str, ...]:
+        telegram_cfg = self.config.get("telegram") or {}
+        raw_defaults = telegram_cfg.get("channel_defaults")
+        normalized: List[str] = []
+        if isinstance(raw_defaults, (list, tuple, set)):
+            for entry in raw_defaults:
+                channel = self._normalize_channel_name(entry)
+                if channel and channel not in normalized:
+                    normalized.append(channel)
+        elif isinstance(raw_defaults, str):
+            channel = self._normalize_channel_name(raw_defaults)
+            if channel:
+                normalized.append(channel)
+
+        if not normalized:
+            normalized = ["telegram", "voice", "sms"]
+
+        return tuple(normalized)
+
     def _channels_for_assignee(self, name: str, assignee_id: Optional[str]) -> Tuple[str, ...]:
         normalized = self._normalize_assignee_name(name)
         if normalized:
@@ -524,26 +611,25 @@ class TelegramReminderService:
             if direct:
                 return direct
 
-        return ()
+        return self.channel_defaults
+
+    def channels_for_task(self, task: ReminderTask) -> Tuple[str, ...]:
+        return self._channels_for_assignee(task.assignee, task.assignee_id)
+
+    def task_requires_channel(self, task: ReminderTask, channel: str) -> bool:
+        canonical = self._normalize_channel_name(channel)
+        if not canonical:
+            return False
+        return canonical in self.channels_for_task(task)
 
     def _channel_enabled(self, channel: str, task: ReminderTask) -> bool:
-        channels = self._channels_for_assignee(task.assignee, task.assignee_id)
-        if channels:
-            return channel in channels
-
-        description = getattr(task, "description", "")
-        if isinstance(description, str) and description:
-            description_lower = description.lower()
-            for alias in ("alex", "алекс"):
-                if alias in description_lower:
-                    alias_channels = self.channel_preferences.get(alias)
-                    if alias_channels:
-                        return channel in alias_channels
-        
-        # default behaviour: telegram enabled, twilio only if phone mapping exists
-        if channel == "telegram":
+        canonical = self._normalize_channel_name(channel)
+        if canonical == "telegram":
             return True
-        if channel == "twilio":
+        if canonical == "voice":
+            recipient = self._resolve_twilio_recipient(task)
+            return bool(recipient and recipient in self.phone_mapping)
+        if canonical == "sms":
             recipient = self._resolve_twilio_recipient(task)
             return bool(recipient and recipient in self.phone_mapping)
         return False
@@ -847,6 +933,138 @@ class TelegramReminderService:
 
         return actions
 
+    def _update_delivery_stats(
+        self,
+        deliveries: Dict[str, Sequence[ReminderTask]],
+        total_tasks: int,
+        *,
+        requested_chat: Optional[str],
+        broadcast_all: bool,
+    ) -> None:
+        try:
+            tz = pytz.timezone(self.timezone_name)
+        except Exception:  # pragma: no cover - fallback
+            tz = pytz.UTC
+
+        timestamp = datetime.now(tz)
+        per_chat_counts: Dict[str, int] = {chat: len(tasks) for chat, tasks in deliveries.items()}
+        per_chat_assignees: Dict[str, List[str]] = {}
+        delivered_ids: Set[str] = set()
+
+        for chat, tasks in deliveries.items():
+            assignees = {task.assignee or "—" for task in tasks}
+            per_chat_assignees[chat] = sorted(assignees)
+            for task in tasks:
+                delivered_ids.add(task.task_id)
+
+        delivered_tasks = len(delivered_ids)
+        missing_tasks = max(total_tasks - delivered_tasks, 0)
+        requested_chat_str = str(requested_chat).strip() if requested_chat is not None else None
+
+        self._last_delivery_stats = DeliveryStats(
+            timestamp=timestamp,
+            timezone=self.timezone_name,
+            total_tasks=total_tasks,
+            delivered_tasks=delivered_tasks,
+            per_chat_counts=per_chat_counts,
+            per_chat_assignees=per_chat_assignees,
+            missing_tasks=missing_tasks,
+            broadcast_all=broadcast_all,
+            requested_chat=requested_chat_str,
+            user_actions=list(self._recent_user_actions),
+            failed_actions=list(self._recent_failed_actions),
+        )
+
+        if deliveries:
+            detail = ", ".join(f"{chat}:{len(tasks)}" for chat, tasks in deliveries.items())
+        else:
+            detail = "no deliveries"
+        LOGGER.info(
+            "Telegram deliveries: total=%s delivered=%s missing=%s chats=%s",
+            total_tasks,
+            delivered_tasks,
+            missing_tasks,
+            detail,
+        )
+
+    def _build_chat_shortcuts(self) -> List[Dict[str, str]]:
+        telegram_cfg = self.config.get("telegram") or {}
+        raw_shortcuts = telegram_cfg.get("chat_shortcuts")
+        if not isinstance(raw_shortcuts, list):
+            return []
+
+        shortcuts: List[Dict[str, str]] = []
+        for entry in raw_shortcuts:
+            if not isinstance(entry, dict):
+                continue
+
+            text = str(entry.get("text") or "").strip()
+            if not text:
+                continue
+
+            shortcut_type = str(entry.get("type") or "").strip().lower()
+            url = str(entry.get("url") or "").strip()
+
+            if shortcut_type in {"group_chat", "group"}:
+                candidate_url = url or self.group_chat_url
+                if not candidate_url:
+                    LOGGER.warning("Chat shortcut '%s' skipped: no group chat URL configured.", text)
+                    continue
+                url = candidate_url
+            elif shortcut_type in {"url", "link"}:
+                if not url:
+                    LOGGER.warning("Chat shortcut '%s' skipped: URL is missing.", text)
+                    continue
+            else:
+                if not url:
+                    LOGGER.warning(
+                        "Chat shortcut '%s' skipped: unsupported type '%s' without URL.",
+                        text,
+                        shortcut_type or "",
+                    )
+                    continue
+
+            shortcuts.append({"text": text, "url": url})
+
+        return shortcuts
+
+    def _register_user_action(self, entry: str) -> None:
+        if not entry:
+            return
+        self._recent_user_actions.append(entry)
+        if len(self._recent_user_actions) > 50:
+            self._recent_user_actions = self._recent_user_actions[-50:]
+        if self._last_delivery_stats is not None:
+            self._last_delivery_stats.user_actions.append(entry)
+
+    def _register_failed_action(self, entry: str) -> None:
+        if not entry:
+            return
+        self._recent_failed_actions.append(entry)
+        if len(self._recent_failed_actions) > 50:
+            self._recent_failed_actions = self._recent_failed_actions[-50:]
+        if self._last_delivery_stats is not None:
+            self._last_delivery_stats.failed_actions.append(entry)
+
+    @staticmethod
+    def _format_actor_label(actor: Dict[str, Any]) -> str:
+        if not isinstance(actor, dict):
+            return ""
+        username = str(actor.get("username") or "").strip()
+        if username:
+            if not username.startswith("@"):
+                username = f"@{username}"
+            return username
+        first_name = str(actor.get("first_name") or "").strip()
+        last_name = str(actor.get("last_name") or "").strip()
+        full_name = " ".join(part for part in (first_name, last_name) if part)
+        if full_name:
+            return full_name
+        user_id = actor.get("id")
+        if user_id is not None:
+            return f"id={user_id}"
+        return ""
+
     def _load_cached_chat_id(self) -> Optional[str]:
         try:
             if CHAT_ID_CACHE_PATH.exists():
@@ -878,6 +1096,114 @@ class TelegramReminderService:
         if not self.default_chat_id:
             self.default_chat_id = chat_id
             self._persist_chat_id(chat_id)
+
+    def resolve_summary_chat(self, override: Optional[str] = None) -> Optional[str]:
+        if override:
+            LOGGER.debug("Summary chat override provided: %s", override)
+            return str(override)
+        if self.group_chat_id:
+            LOGGER.info("Summary notifications will be sent to group chat %s.", self.group_chat_id)
+            return self.group_chat_id
+        fallback = self._resolve_target_chat()
+        if fallback:
+            LOGGER.info("Summary notifications fallback to default chat %s.", fallback)
+        else:
+            LOGGER.warning("Failed to resolve summary chat: no group or default chat available.")
+        return fallback
+
+    def register_callback_metrics(self, processed_callbacks: int) -> None:
+        if not self._last_delivery_stats:
+            return
+        self._last_delivery_stats.callbacks_processed = processed_callbacks
+
+    def register_voice_results(self, attempted: int, failures: int) -> None:
+        if not self._last_delivery_stats:
+            return
+        self._last_delivery_stats.voice_calls = attempted
+        self._last_delivery_stats.voice_failures = failures
+
+    def generate_group_summary(self) -> Optional[str]:
+        stats = self._last_delivery_stats
+        if not stats:
+            return None
+
+        timestamp_local = stats.timestamp
+        try:
+            tz = pytz.timezone(stats.timezone)
+        except Exception:  # pragma: no cover - fallback
+            tz = pytz.UTC
+
+        if timestamp_local.tzinfo is None:
+            timestamp_local = tz.localize(timestamp_local)
+        else:
+            try:
+                timestamp_local = timestamp_local.astimezone(tz)
+            except Exception:  # pragma: no cover - fallback
+                pass
+
+        time_label = timestamp_local.strftime("%d.%m %H:%M")
+        tz_label = timestamp_local.strftime("%Z") or stats.timezone
+
+        lines = [f"📊 Отчёт бота ({time_label} {tz_label}):"]
+        lines.append(f"• Отправлено задач: {stats.delivered_tasks}/{stats.total_tasks}")
+        lines.append(f"• Чатов с уведомлениями: {len(stats.per_chat_counts)}")
+
+        if stats.missing_tasks:
+            lines.append(f"• Без уведомлений (нет чатов/фильтров): {stats.missing_tasks}")
+        if stats.callbacks_processed:
+            lines.append(f"• Ответов пользователей обработано: {stats.callbacks_processed}")
+        if stats.voice_calls or stats.voice_failures:
+            voice_line = f"• Запущено звонков: {stats.voice_calls}"
+            if stats.voice_failures:
+                voice_line += f" (ошибок: {stats.voice_failures})"
+            lines.append(voice_line)
+        if stats.sms_sent:
+            lines.append(f"• SMS уведомлений: {stats.sms_sent}")
+
+        if stats.user_actions:
+            lines.append("• Ответы пользователей:")
+            for entry in stats.user_actions:
+                lines.append(f"  ◦ {entry}")
+
+        if stats.failed_actions:
+            lines.append("• Неудачные действия:")
+            for entry in stats.failed_actions:
+                lines.append(f"  ◦ {entry}")
+
+        if stats.per_chat_counts:
+            lines.append("Чаты:")
+            for chat_id, count in sorted(stats.per_chat_counts.items(), key=lambda item: item[0]):
+                assignees = stats.per_chat_assignees.get(chat_id) or []
+                assignee_text = f" (исполнители: {', '.join(assignees)})" if assignees else ""
+                lines.append(f"  ◦ {chat_id}: {count} задач{assignee_text}")
+
+        # Once summary is generated, clear collected actions to avoid duplicates on next run.
+        self._recent_user_actions.clear()
+        self._recent_failed_actions.clear()
+        stats.user_actions.clear()
+        stats.failed_actions.clear()
+
+        return "\n".join(lines)
+
+    def _warn_chat_configuration(self) -> None:
+        if self._config_chat_id and self._configured_default_chat and self._config_chat_id != self._configured_default_chat:
+            LOGGER.warning(
+                "telegram.chat_id=%s differs from TELEGRAM_CHAT_ID=%s; using %s.",
+                self._config_chat_id,
+                self._configured_default_chat,
+                self._configured_default_chat,
+            )
+        if self._config_group_chat_id and self.group_chat_id and self._config_group_chat_id != self.group_chat_id:
+            LOGGER.warning(
+                "telegram.group_chat_id=%s differs from TELEGRAM_GROUP_CHAT_ID=%s; using %s.",
+                self._config_group_chat_id,
+                self.group_chat_id,
+                self.group_chat_id,
+            )
+        if not self.group_chat_id and not (self.default_chat_id or self._configured_default_chat):
+            LOGGER.warning(
+                "Telegram bot has no chat id registered; send /start from a chat or configure TELEGRAM_CHAT_ID."
+            )
 
     def _ensure_webhook_cleared(self) -> None:
         if self._webhook_cleared:
@@ -1216,6 +1542,10 @@ class TelegramReminderService:
         for idx in range(0, len(keyboard_buttons), buttons_per_row_int):
             inline_keyboard.append(keyboard_buttons[idx : idx + buttons_per_row_int])
 
+        if self.chat_shortcuts:
+            shortcut_buttons = [{"text": shortcut["text"], "url": shortcut["url"]} for shortcut in self.chat_shortcuts]
+            inline_keyboard.append(shortcut_buttons)
+
         reply_markup = {"inline_keyboard": inline_keyboard}
         payload = {
             "chat_id": chat_id,
@@ -1312,18 +1642,34 @@ class TelegramReminderService:
                     "Chat id not supplied. Отправьте /start боту или передайте --chat-id для send_telegram_reminders.py."
                 )
             if broadcast_all:
-                self._dispatch_tasks_to_chat(str(target_chat), telegram_tasks)
+                target_chat_str = str(target_chat)
+                deliveries = {target_chat_str: list(telegram_tasks)} if telegram_tasks else {}
+                self._update_delivery_stats(
+                    deliveries,
+                    len(telegram_tasks),
+                    requested_chat=target_chat_str,
+                    broadcast_all=True,
+                )
+                self._dispatch_tasks_to_chat(target_chat_str, telegram_tasks)
                 return telegram_tasks
 
             target_chat_str = str(target_chat)
             deliveries = self._group_tasks_by_chat(telegram_tasks)
             bucket = deliveries.get(target_chat_str, [])
 
+            filtered_deliveries = {target_chat_str: bucket} if bucket else {}
+            self._update_delivery_stats(
+                filtered_deliveries,
+                len(bucket),
+                requested_chat=target_chat_str,
+                broadcast_all=False,
+            )
             self._dispatch_tasks_to_chat(target_chat_str, bucket)
             return telegram_tasks
 
         if not telegram_tasks:
             LOGGER.info("No pending tasks to send.")
+            self._update_delivery_stats({}, 0, requested_chat=None, broadcast_all=True)
             return []
 
         deliveries = {
@@ -1331,6 +1677,12 @@ class TelegramReminderService:
             for chat, bucket in self._group_tasks_by_chat(telegram_tasks).items()
         }
         deliveries = {chat: bucket for chat, bucket in deliveries.items() if bucket}
+        self._update_delivery_stats(
+            deliveries,
+            len(telegram_tasks),
+            requested_chat=None,
+            broadcast_all=True,
+        )
         if not deliveries:
             LOGGER.warning(
                 "Не удалось сопоставить ни одну задачу с Telegram чатами исполнителей. "
@@ -1427,6 +1779,8 @@ class TelegramReminderService:
                 ", ".join(sorted(set(skipped))[:3]),
             )
 
+        attempted_calls = 0
+        call_failures = 0
         deliveries: List[Dict[str, Any]] = []
         for phone, bucket in grouped.items():
             messages = [self._voice_prompt(task) for task in bucket]
@@ -1451,19 +1805,75 @@ class TelegramReminderService:
                     len(bucket),
                 )
 
-            deliveries.append(
-                {
-                    "phone": phone,
-                    "assignees": sorted(
-                        {task.assignee for task in bucket if task.assignee and task.assignee != "—"}
-                    )
-                    or ["—"],
-                    "task_ids": [task.task_id for task in bucket],
-                    "call_result": result,
-                    "dry_run": dry_run,
-                }
-            )
+            call_result = {
+                "success": getattr(result, "success", True),
+                "status": getattr(result, "status", "unknown"),
+                "sid": getattr(result, "sid", None),
+            }
+            deliveries.append({"assignees": [task.assignee for task in bucket], "call_result": call_result})
+            attempted_calls += 1
+            if not call_result["success"]:
+                LOGGER.warning(
+                    "Twilio call for %s reported failure: %s",
+                    phone,
+                    call_result.get("status") or call_result.get("error"),
+                )
+                call_failures += 1
 
+        self.register_voice_results(attempted_calls, call_failures)
+        return deliveries
+
+    def _register_sms_results(self, sent: int, failed: int) -> None:
+        if not self._last_delivery_stats:
+            return
+        self._last_delivery_stats.sms_sent += max(sent, 0)
+        if failed:
+            self._register_failed_action(f"SMS failures: {failed}")
+
+    def send_sms_reminders(self, tasks: Sequence[ReminderTask]) -> List[Dict[str, Any]]:
+        if not tasks:
+            return []
+        if not self.twilio_service or not self.twilio_from_phone:
+            raise ConfigurationError("Twilio не настроен. SMS отправка невозможна.")
+
+        grouped: Dict[str, List[ReminderTask]] = {}
+        for task in tasks:
+            if not self.task_requires_channel(task, "sms"):
+                continue
+            recipient = self._resolve_twilio_recipient(task)
+            if not recipient:
+                LOGGER.debug("Пропущено SMS: нет получателя для %s", task.task_id)
+                continue
+            phone = self.phone_mapping.get(recipient)
+            if not phone:
+                LOGGER.debug("Пропущено SMS: нет номера для %s", recipient)
+                continue
+            grouped.setdefault(phone, []).append(task)
+
+        if not grouped:
+            return []
+
+        successful = 0
+        failures = 0
+        deliveries: List[Dict[str, Any]] = []
+        for phone, bucket in grouped.items():
+            lines = ["📋 Напоминания:"]
+            for task in bucket:
+                lines.append(f"- {task.name} (до {task.due_human})")
+            body = "\n".join(lines)
+            result = self.twilio_service.send_sms(self.twilio_from_phone, phone, body)
+            deliveries.append({
+                "phone": phone,
+                "tasks": [task.task_id for task in bucket],
+                "result": result,
+            })
+            if result.success:
+                successful += 1
+            else:
+                failures += 1
+                LOGGER.warning("SMS delivery to %s failed: %s", phone, result.error)
+
+        self._register_sms_results(successful, failures)
         return deliveries
 
     def poll_updates_for(
@@ -1522,6 +1932,9 @@ class TelegramReminderService:
             if last_update_id is not None:
                 offset = last_update_id + 1
 
+        if processed:
+            LOGGER.info("Processed %s callback(s) from Telegram.", processed)
+            self.register_callback_metrics(processed)
         return processed
 
     # ------------------------------------------------------------------ #
@@ -1620,6 +2033,9 @@ class TelegramReminderService:
             error_log["result"] = "error"
             error_log["error"] = str(exc)
             self._append_callback_log(error_log)
+            actor_label = self._format_actor_label(actor)
+            failure_entry = f"{actor_label or 'неизвестный пользователь'} • {task_id}: {exc}"
+            self._register_failed_action(failure_entry)
             if callback_id:
                 try:
                     self.answer_callback(
@@ -1635,6 +2051,21 @@ class TelegramReminderService:
                     chat_id,
                     f"⚠️ Не удалось {status_message} <b>{task_id}</b>: {exc}",
                 )
+            group_chat = self.resolve_summary_chat()
+            if group_chat:
+                try:
+                    self.send_plain_message(
+                        group_chat,
+                        (
+                            "⚠️ Ошибка при обработке действия пользователя:\n"
+                            f"• Задача: <b>{task_id}</b>\n"
+                            f"• Пользователь: {actor_label or 'неизвестно'}\n"
+                            f"• Действие: {status_key}\n"
+                            f"• Ошибка: {exc}"
+                        ),
+                    )
+                except Exception:  # pragma: no cover - best effort
+                    LOGGER.debug("Failed to notify group about callback failure: %s", exc)
             return
 
         if not chat_id:
@@ -1677,6 +2108,11 @@ class TelegramReminderService:
                     f" <b>{hours_display}</b> ч. Новый срок: <b>{due_formatted}</b>"
                 ),
             )
+
+        actor_label = self._format_actor_label(actor)
+        action_label = "перенёс задачу" if is_postpone_action else f"изменил статус на {status_key}"
+        notification_entry = f"{actor_label or 'неизвестный пользователь'} • {task_name} — {action_label}"
+        self._register_user_action(notification_entry)
 
 
     def _postpone_task_due_date(
