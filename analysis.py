@@ -40,6 +40,7 @@ class VoiceAnalyzer:
         openai.api_key = api_key  # legacy fallback
 
     def analyze_recording(self, recording_url: str) -> AnalysisResult:
+        audio_path: Optional[Path] = None
         try:
             audio_path = self._download_recording(recording_url)
             transcript_text = self._transcribe(audio_path)
@@ -58,6 +59,14 @@ class VoiceAnalyzer:
                 summary=f"Error analyzing response: {exc}",
                 transcript="",
             )
+        finally:
+            if audio_path:
+                try:
+                    audio_path.unlink(missing_ok=True)
+                except FileNotFoundError:  # pragma: no cover - defensive cleanup
+                    pass
+                except OSError:  # pragma: no cover - best-effort cleanup
+                    pass
 
     def _download_recording(self, recording_url: str) -> Path:
         response = requests.get(recording_url, timeout=30)
@@ -65,6 +74,7 @@ class VoiceAnalyzer:
         temp_file = tempfile.NamedTemporaryFile(delete=False, suffix=".mp3")
         temp_file.write(response.content)
         temp_file.flush()
+        temp_file.close()
         return Path(temp_file.name)
 
     def _transcribe(self, audio_path: Path) -> str:

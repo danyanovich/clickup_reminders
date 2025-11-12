@@ -11,7 +11,12 @@ class ClickUpClient:
 
     BASE_URL = "https://api.clickup.com/api/v2"
 
-    def __init__(self, api_key: str, team_id: str):
+    def __init__(
+        self,
+        api_key: str,
+        team_id: str,
+        timeout: float | tuple[float, float] | None = 30,
+    ):
         self.team_id = team_id
         self.session = requests.Session()
         self.session.headers.update(
@@ -20,6 +25,7 @@ class ClickUpClient:
                 "Content-Type": "application/json",
             }
         )
+        self.request_timeout = timeout
 
     def fetch_tasks(
         self,
@@ -32,7 +38,11 @@ class ClickUpClient:
             return []
 
         params = {"include_assignees": "true"}
-        response = self.session.get(f"{self.BASE_URL}/list/{resolved_list_id}/task", params=params)
+        response = self.session.get(
+            f"{self.BASE_URL}/list/{resolved_list_id}/task",
+            params=params,
+            timeout=self.request_timeout,
+        )
         response.raise_for_status()
         payload = response.json()
         tasks = payload.get("tasks", [])
@@ -40,7 +50,10 @@ class ClickUpClient:
 
     def fetch_task(self, task_id: str) -> Dict[str, Any]:
         """Retrieve a single task payload by id."""
-        response = self.session.get(f"{self.BASE_URL}/task/{task_id}")
+        response = self.session.get(
+            f"{self.BASE_URL}/task/{task_id}",
+            timeout=self.request_timeout,
+        )
         response.raise_for_status()
         return response.json()
 
@@ -77,7 +90,11 @@ class ClickUpClient:
                 }
                 if space_ids:
                     params["space_ids[]"] = list(space_ids)
-                response = self.session.get(f"{self.BASE_URL}/team/{self.team_id}/task", params=params)
+                response = self.session.get(
+                    f"{self.BASE_URL}/team/{self.team_id}/task",
+                    params=params,
+                    timeout=self.request_timeout,
+                )
                 response.raise_for_status()
 
                 payload = response.json()
@@ -100,6 +117,7 @@ class ClickUpClient:
         response = self.session.put(
             f"{self.BASE_URL}/task/{task_id}",
             json={"status": status},
+            timeout=self.request_timeout,
         )
         response.raise_for_status()
 
@@ -111,6 +129,7 @@ class ClickUpClient:
         response = self.session.put(
             f"{self.BASE_URL}/task/{task_id}",
             json=payload,
+            timeout=self.request_timeout,
         )
         response.raise_for_status()
 
@@ -119,12 +138,16 @@ class ClickUpClient:
         response = self.session.post(
             f"{self.BASE_URL}/task/{task_id}/comment",
             json={"comment_text": comment_text},
+            timeout=self.request_timeout,
         )
         response.raise_for_status()
 
     def fetch_comments(self, task_id: str) -> List[Dict[str, Any]]:
         """Fetch comments for a task to verify audit trail."""
-        response = self.session.get(f"{self.BASE_URL}/task/{task_id}/comment")
+        response = self.session.get(
+            f"{self.BASE_URL}/task/{task_id}/comment",
+            timeout=self.request_timeout,
+        )
         response.raise_for_status()
         payload = response.json()
         return payload.get("comments", [])
@@ -143,13 +166,19 @@ class ClickUpClient:
         return None
 
     def _fetch_spaces(self) -> List[Dict[str, Any]]:
-        response = self.session.get(f"{self.BASE_URL}/team/{self.team_id}/space")
+        response = self.session.get(
+            f"{self.BASE_URL}/team/{self.team_id}/space",
+            timeout=self.request_timeout,
+        )
         response.raise_for_status()
         payload = response.json()
         return payload.get("spaces", [])
 
     def _fetch_lists(self, space_id: str) -> List[Dict[str, Any]]:
-        response = self.session.get(f"{self.BASE_URL}/space/{space_id}/list")
+        response = self.session.get(
+            f"{self.BASE_URL}/space/{space_id}/list",
+            timeout=self.request_timeout,
+        )
         response.raise_for_status()
         payload = response.json()
         return payload.get("lists", [])

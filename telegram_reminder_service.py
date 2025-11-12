@@ -13,6 +13,7 @@ import json
 import logging
 import os
 import time
+from collections import deque
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -458,6 +459,8 @@ class TelegramReminderService:
         self._recent_user_actions: List[str] = []
         self._recent_failed_actions: List[str] = []
         self._warn_chat_configuration()
+        self._callback_log_max_bytes = self._resolve_callback_log_max_bytes()
+        self._callback_log_max_entries = self._resolve_callback_log_max_entries()
 
     @classmethod
     def from_environment(cls) -> "TelegramReminderService":
@@ -1240,6 +1243,7 @@ class TelegramReminderService:
             return
         try:
             self.callback_log_path.parent.mkdir(parents=True, exist_ok=True)
+            self._prune_callback_log_if_needed()
             line = json.dumps(entry, ensure_ascii=True)
             with self.callback_log_path.open("a", encoding="utf-8") as fh:
                 fh.write(line)
@@ -1250,6 +1254,71 @@ class TelegramReminderService:
                     self._processed_callback_ids.add(str(callback_id))
         except Exception as exc:  # pragma: no cover - best effort
             LOGGER.debug("Failed to append callback log: %s", exc)
+
+    def _resolve_callback_log_max_bytes(self) -> int:
+        raw_limit = (self.telegram_config or {}).get("callback_log_max_mb")
+        if raw_limit is None:
+            return 5 * 1024 * 1024  # 5 MiB по умолчанию
+        try:
+            megabytes = float(raw_limit)
+        except (TypeError, ValueError):
+            LOGGER.warning("Invalid callback_log_max_mb value '%s'. Using default.", raw_limit)
+            return 5 * 1024 * 1024
+        return max(int(megabytes * 1024 * 1024), 0)
+
+    def _resolve_callback_log_max_entries(self) -> int:
+        raw_limit = (self.telegram_config or {}).get("callback_log_max_entries")
+        if raw_limit is None:
+            return 5000
+        try:
+            value = int(raw_limit)
+        except (TypeError, ValueError):
+            LOGGER.warning("Invalid callback_log_max_entries value '%s'. Using default.", raw_limit)
+            return 5000
+        return max(value, 0)
+
+    def _prune_callback_log_if_needed(self) -> None:
+        if not self.callback_log_path or not self.callback_log_path.exists():
+            return
+        if self._callback_log_max_bytes <= 0:
+            try:
+                self.callback_log_path.unlink()
+            except OSError as exc:
+                LOGGER.debug("Failed to remove callback log: %s", exc)
+            return
+        try:
+            current_size = self.callback_log_path.stat().st_size
+        except OSError as exc:
+            LOGGER.debug("Failed to stat callback log: %s", exc)
+            return
+        if current_size <= self._callback_log_max_bytes:
+            return
+
+        if self._callback_log_max_entries <= 0:
+            try:
+                self.callback_log_path.unlink()
+            except OSError as exc:
+                LOGGER.debug("Failed to truncate callback log: %s", exc)
+            return
+
+        try:
+            with self.callback_log_path.open("r", encoding="utf-8") as fh:
+                tail = deque(fh, maxlen=self._callback_log_max_entries)
+        except Exception as exc:
+            LOGGER.debug("Failed to read callback log for pruning: %s", exc)
+            return
+
+        temp_path = self.callback_log_path.with_suffix(self.callback_log_path.suffix + ".tmp")
+        try:
+            with temp_path.open("w", encoding="utf-8") as fh:
+                fh.writelines(tail)
+            temp_path.replace(self.callback_log_path)
+        except Exception as exc:
+            LOGGER.debug("Failed to rotate callback log: %s", exc)
+            try:
+                temp_path.unlink(missing_ok=True)
+            except Exception:  # pragma: no cover - best effort cleanup
+                pass
 
     def _load_processed_callback_ids(self) -> set[str]:
         if not self.callback_log_path:

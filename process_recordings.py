@@ -63,9 +63,6 @@ def resolve_credentials() -> Dict[str, Optional[str]]:
     # If we have all Twilio credentials from env, skip file reading
     if creds["twilio_account_sid"] and creds["twilio_auth_token"]:
         print("✅ Using Twilio credentials from environment variables")
-        print(f"   Account SID length: {len(creds['twilio_account_sid'])}")
-        print(f"   Auth Token length: {len(creds['twilio_auth_token'])}")
-        print(f"   Account SID starts with: {creds['twilio_account_sid'][:2]}")
         return creds
     
     # Otherwise, try to load from files
