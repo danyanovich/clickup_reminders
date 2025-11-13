@@ -23,6 +23,10 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         help="Override target chat id. Falls back to TELEGRAM_CHAT_ID or config.",
     )
     parser.add_argument(
+        "--summary-chat-id",
+        help="Override summary notifications chat id. Falls back to TELEGRAM_GROUP_CHAT_ID or config.",
+    )
+    parser.add_argument(
         "--limit",
         type=int,
         help="Limit amount of tasks to send (default: all pending).",
@@ -122,7 +126,8 @@ def main(argv: list[str] | None = None) -> int:
                             status_text = f"ошибка ({error})"
                         summary_lines.append(f"• {assignees} — {status_text}")
 
-                    target_chat = service.resolve_summary_chat(args.chat_id)
+                    summary_override = args.summary_chat_id
+                    target_chat = service.resolve_summary_chat(summary_override)
 
                     if target_chat:
                         try:
