@@ -1,251 +1,174 @@
+<div align="center">
+  
 # 🔔 AI Reminders System — ClickUp v4.0
 
-Автоматическая система напоминаний по задачам ClickUp. Основной канал доставки — Telegram‑бот с интерактивными кнопками: задачей можно поделиться, быстро отметить статус и сразу обновить ClickUp. Голосовые звонки через Twilio и SMS остаются резервным сценарием.
+*A smart, context-aware notification and reminder system for teams using ClickUp.*
 
-## 🌟 Что умеет
+[![Python](https://img.shields.io/badge/Python-3.8+-blue.svg?style=flat-square&logo=python&logoColor=white)](https://www.python.org/)
+[![License: MIT](https://img.shields.io/badge/License-MIT-green.svg?style=flat-square)](https://opensource.org/licenses/MIT)
+[![ClickUp API](https://img.shields.io/badge/ClickUp-API-7B68EE.svg?style=flat-square&logo=clickup&logoColor=white)](https://clickup.com/api)
+[![Twilio](https://img.shields.io/badge/Twilio-Voice_&_SMS-F22F46.svg?style=flat-square&logo=twilio&logoColor=white)](https://www.twilio.com/)
+[![OpenAI](https://img.shields.io/badge/OpenAI-Whisper_&_GPT4-412991.svg?style=flat-square&logo=openai&logoColor=white)](https://openai.com/)
 
-- Автопоиск задач для напоминаний в списке ClickUp.
-- **🆕 Telegram‑бот с инлайн‑кнопками**: /start показывает актуальные задачи, а кнопки «✅ Выполнено/❌ Не выполнено/🔄 В работе» сразу обновляют статус в ClickUp.
-- Гибкая маршрутизация по каналам: для каждого исполнителя можно выбрать набор каналов (`telegram`/`twilio`). По умолчанию все получают Telegram, но, например, Алекс получает только звонок.
-- Голосовые звонки через Twilio с текстом задачи.
-- Анализ ответа (выполнено/не выполнено/неясно) через OpenAI.
-- Автообновление статусов задач + комментарий с транскриптом.
-- SMS как запасной канал, если звонок неудачен или ответа нет.
-- Telegram уведомления о звонках, обновлениях статусов и ошибках.
+[Quick Start](docs/QUICKSTART_v4.md) • 
+[Telegram Setup](TELEGRAM_SETUP.md) • 
+[Webhook Guide](docs/REALTIME_TRANSCRIPTION_SETUP.md) • 
+[Migration](docs/MIGRATION_COMPLETE_v4.md)
 
-## 🧭 Как это работает
+</div>
 
-- GitHub Actions (или cron) запускает `send_telegram_reminders.py`, который собирает задачи из ClickUp и отправляет их в Telegram с инлайн‑кнопками.
-- Пользователь открывает бота (`/start`) и отмечает статус задачи кнопкой — ClickUp получает обновление мгновенно, добавляется комментарий.
-- При необходимости (нет ответа в Telegram) система продолжает голосовой сценарий:
-  - Twilio совершает звонок и предлагает ответить после сигнала.
-  - Транскрипция ответа:
-    - Либо скачивается запись и распознаётся через OpenAI Whisper.
-    - Либо Twilio присылает транскрипт в ваш вебхук (`/transcription`).
-- AI определяет статус и обновляет задачу в ClickUp.
+---
 
-## 🚀 Быстрый старт
+## 🌟 Overview
 
-### Требования
-- Python 3.8+ (рекомендуется 3.10+)
-- Аккаунты и ключи: ClickUp API, Twilio, OpenAI
-- Публичный HTTPS URL для вебхуков (например, через ngrok)
-- (Опционально) Telegram бот для уведомлений
+The **AI Reminders System** is an automated bot designed to fetch tasks from a specific ClickUp list and notify assignees via their preferred communication channel. It supports interactive Telegram buttons, voice calls via Twilio with AI-driven response transcription (OpenAI Whisper/GPT-4), and fallback SMS notifications.
 
-### Установка
+Forget manual follow-ups—let the AI ask your team about task statuses and update ClickUp automatically!
+
+## ✨ Key Features
+
+- **🚀 Telegram Bot Engine (New)**: Interactive inline buttons (`✅ Done`, `❌ Blocked`, `🔄 In Progress`). Instantly updates the ClickUp task status and leaves a comment.
+- **📞 AI Voice Calls**: Uses Twilio to call the assignee, dictate the task using TTS, record their response, and transcribe it using OpenAI Whisper.
+- **🧠 Smart Status Parsing**: Analyzes conversational replies using GPT-4 to determine the task outcome.
+- **🔀 Intelligent Routing**: Route reminders via multiple channels (`telegram`, `twilio_voice`, `twilio_sms`) tailored to individual assignees.
+- **⚡ Instant Sync**: Automatic webhook-based updates sync the parsed status directly back to the assignee's ClickUp task.
+
+## 🧭 Architecture Flow
+
+1. **Trigger**: A cron job (or GitHub Action) runs `scripts/run_workflow_local.py`.
+2. **Fetch**: The system queries the configured ClickUp Workspace & List for tasks matching the criteria.
+3. **Dispatch**: 
+    - **Telegram**: Sends an actionable message to the assignee.
+    - **Voice (Fallback/Selected)**: Twilio initiates a call -> TwiML handles the voice interaction -> user responds.
+4. **Process**: The Webhook Server receives the voice recording -> OpenAI transcribes -> GPT evaluates the status.
+5. **Update**: ClickUp task status is modified, and a comment is added with the context.
+
+---
+
+## 🚀 Getting Started
+
+### Prerequisites
+
+- **Python 3.8+** (Recommended 3.10+)
+- API Keys for: **ClickUp**, **Twilio**, **OpenAI**, and **Telegram Bot**
+- A public HTTPS endpoint for Twilio Webhooks (via `ngrok` or similar for local testing)
+
+### Installation
+
+Clone the repository and install dependencies:
+
 ```bash
-git clone https://github.com/viorabuild/ai-reminders.git
-cd ai-reminders
+git clone https://github.com/danyanovich/clickup_reminders.git
+cd clickup_reminders
 
+# Create virtual environment
+python -m venv .venv
+source .venv/bin/activate
+
+# Install requirements
 pip install -r requirements.txt
-# Если не установлены, добавьте зависимости веб-сервера/времени:
-pip install Flask pytz
+pip install Flask pytz  # Additional requirements for the webhook server
+```
 
+### Configuration
+
+Copy the example configuration files and populate them with your keys.
+
+```bash
 cp config.example.json config.json
-# отредактируйте config.json под себя
+cp secrets.example.json secrets.json
 ```
 
-### Конфигурация
-- Файл `config.json` (путь можно переопределить `CONFIG_PATH`):
-- `telegram.channels` — опциональный словарь с выбором каналов для каждого исполнителя. Ключ может включать несколько алиасов через `|`. Пример:
-  ```json
-  {
-    "telegram": {
-      "channels": {
-        "Alex|alex|Алекс|алекс": ["twilio"],
-        "230420643": ["telegram"],
-        "100560817": ["telegram"]
-      },
-      "pending_assignees": {
-        "2144441031": { "name": "Семен", "aliases": ["Semen"] },
-        "100562222": { "name": "Владимир", "aliases": ["Vladimir"] },
-        "100560816": { "name": "Алена", "aliases": ["Alena", "Alyona"] }
-      }
-    }
+Add your API Keys to the environment or the `secrets.json` file. The application gracefully supports `.env` structures. 
+
+```json
+// secrets.json (Example)
+{
+  "clickup": {
+    "api_key": "your_clickup_api_key",
+    "team_id": "your_clickup_team_id"
+  },
+  "telegram": {
+    "bot_token": "your_telegram_bot_token"
   }
-  ```
-  Если для человека канал не указан, используются значения по умолчанию: Telegram включён, Twilio только при наличии телефона в `phone_mapping`.
-
-- Секреты: через переменные окружения или `secrets.json` (путь задаётся `SECRETS_PATH`).
-```bash
-export CLICKUP_API_KEY=...        # обязательный
-export CLICKUP_TEAM_ID=...        # id команды/воркспейса
-export TWILIO_ACCOUNT_SID=...
-export TWILIO_AUTH_TOKEN=...
-export TWILIO_PHONE_NUMBER=+1234567890
-export OPENAI_API_KEY=...
-# Опционально для Telegram уведомлений:
-export TELEGRAM_BOT_TOKEN=...
-# Для прямых сообщений достаточно отправить /start боту один раз.
-# Если хотите явно указать получателя (например, в CI), добавьте:
-# export TELEGRAM_CHAT_ID=<ваш_chat_id>
+}
 ```
 
-### Запуск
-- Telegram сценарий:
+Edit `config.json` to map ClickUp assignees to their respective Telegram IDs or phone numbers.
+
+### Running the System
+
+#### 💬 Telegram Bot (Polling Mode)
+Run the Telegram bot to handle incoming commands and inline button callbacks continuously:
 ```bash
-# Разовое отправление задач в Telegram (используется в GitHub Actions)
-python3 send_telegram_reminders.py --verbose  
-# 30-секундное финальное ожидание ответов уже вшито по умолчанию (параметр --final-poll-seconds)
-
-# Полный запуск как в GitHub Actions (подготовка CONFIG_PATH/секретов)
-python3 scripts/run_workflow_local.py --verbose
-# Можно указать целевой чат через --chat-id или TELEGRAM_CHAT_ID
-
-# Передавать ваш config.json в GitHub Actions удобнее через секрет `CONFIG_JSON`
-# (см. workflow `.github/workflows/processrec.yml`)
-
-# Долгоживущий бот c long polling — отвечает на /start и кнопки
 python3 telegram_bot.py --initial-send --verbose
 ```
 
-- После первого `/start` бот запоминает ваш chat_id в `var/telegram_chat_id.txt`, поэтому GitHub Actions и скрипты могут отправлять напоминания напрямую, даже если в конфигурации не указан `telegram.chat_id`.
-
-- Быстрые голосовые напоминания через Twilio (использует `phone_mapping` и новые методы сервиса):
+#### 📞 Twilio Webhook Server
+Start the Flask server to receive Webhooks for voice interactions:
 ```bash
-# dry-run покажет, кому и сколько задач будет озвучено
-python3 send_twilio_calls.py --dry-run
-
-# ограничить прозвон конкретным исполнителем
-python3 send_twilio_calls.py --assignee "Alex"
-# GitHub Actions автоматически запускает fallback для Алекса, если он не ответил в Telegram
-```
-
-Для полноценной работы звонков и SMS в локальном запуске и GitHub Actions задайте секреты/переменные окружения:
-
-- `TWILIO_ACCOUNT_SID`
-- `TWILIO_AUTH_TOKEN`
-- `TWILIO_PHONE_NUMBER`
-
-В GitHub Actions эти значения передаются через secrets; пример placeholders добавлен в `config.example.json`.
-
-- Запуск основного голосового скрипта:
-```bash
-# опционально: URL вебхуков (используется в некоторых сценариях)
-export WEBHOOK_URL=https://<your-public-host>
-
-python3 reminder_system.py              # обычный запуск (учитывает рабочие часы)
-python3 reminder_system.py --force      # принудительный запуск вне рабочих часов
-python3 reminder_system.py --webhook-url=https://<your-public-host>
-```
-
-- Вебхук‑сервер (опционально, для сценария с колбэками Twilio):
-```bash
-# переменные окружения для сервера
-export WEBHOOK_HOST=0.0.0.0
 export WEBHOOK_PORT=5000
-# директория хранения артефактов (по умолчанию — рядом со скриптом)
-export BASE_DIR="$(pwd)"
-
-python3 webhook_server.py
-# либо скриптом управления:
-./start_webhook_server.sh start|stop|restart|status|logs|follow
+./start_webhook_server.sh start
 ```
 
-### Настройка Twilio (если используете вебхук‑режим)
-- Voice webhook URL:
-  - Вызовите `GET/POST /twiml/<call_id>` для генерации TwiML звонка.
-- Recording/transcription callbacks:
-  - `POST /recording-complete` — уведомление о готовности записи.
-  - `POST /transcription` — транскрипция от Twilio.
-- Call status callback:
-  - `POST /call-status` — статусы звонка (инициирован/идёт/завершён).
-
-Примечание: текущий скрипт звонка по умолчанию использует встроенный TwiML и пост‑транскрипцию через OpenAI (без внешнего `/twiml`). Вебхук‑сервер можно включить как альтернативный сценарий и/или для тестирования.
-
-## 📋 Формат задач в ClickUp
-- Список: «Напоминания» (или имя из `reminder_list_name`).
-- Заголовок: свободный текст (желательно с кратким описанием).
-- Описание: текст, который будет озвучен в звонке.
-- `due_date`: время напоминания.
-
-## ⚙️ Рабочие часы и расписание
-- Дни: по умолчанию будни (см. код), часы: `start`–`end` из `config.json`.
-- Флаг `--force` игнорирует ограничение по времени.
-- Часовой пояс: `Europe/Lisbon` (можно переопределить в коде/конфиге).
-
-## 🖥️ Управление сервером
+#### 🔄 Manual / Cron Execution
+Trigger a manual sweep of tasks and dispatch reminders:
 ```bash
-./start_webhook_server.sh start     # запуск
-./start_webhook_server.sh stop      # остановка
-./start_webhook_server.sh restart   # перезапуск
-./start_webhook_server.sh status    # статус
-./start_webhook_server.sh logs      # последние логи
-./start_webhook_server.sh follow    # «хвост» логов
+python3 scripts/run_workflow_local.py --verbose
 ```
 
-Важно: скрипт использует базовый путь `/home/ubuntu/reminder_daemon`. Для локального запуска обновите переменные внутри `start_webhook_server.sh` или задайте `BASE_DIR`.
+---
 
-## 🧪 Тестирование
+## 🧪 Testing
+
+You can use the built-in testing scripts to verify your configuration before pushing to production:
+
 ```bash
-python3 test_realtime_transcription.py                    # полный прогон
-python3 test_realtime_transcription.py --health           # проверка /health
-python3 test_realtime_transcription.py --twiml            # проверка TwiML
+# Verify Webhook Health & TwiML Generation
+python3 test_realtime_transcription.py --health
+python3 test_realtime_transcription.py --twiml
+
+# Dry-run voice calls to check routing logic
+python3 send_twilio_calls.py --dry-run
 ```
 
-## 📁 Структура проекта
-```
+---
+
+## 📁 Repository Structure
+
+```text
 .
-├── reminder_system.py               # основной скрипт напоминаний
-├── webhook_server.py                # Flask‑вебхук для Twilio
-├── models.py                        # модели данных
-├── analysis.py                      # анализ ответов (AI)
-├── telephony.py                     # интеграция с Twilio
-├── clickup.py                       # клиент ClickUp API
-├── config.py                        # загрузка конфигурации
-├── config.example.json              # пример конфига
-├── start_webhook_server.sh          # управление вебхук‑сервером
-├── test_realtime_transcription.py   # тестовый скрипт
-├── requirements.txt                 # зависимости (добавьте Flask, pytz при необходимости)
-└── var/
-    ├── logs/                        # логи системы
-    ├── transcriptions/              # транскрипты ответов
-    ├── call_data/                   # метаданные звонков
-    └── recordings/                  # записи разговоров
+├── config.json/secrets.json         # Configuration and Secrets (Ignored in Git)
+├── clickup.py                       # ClickUp API Client
+├── telegram_bot.py                  # Polling Telegram Bot Entrypoint
+├── webhook_server.py                # Flask Webhook for Twilio Voice
+├── telephony.py                     # Twilio Integration Logic
+├── reminder_system.py               # Core dispatcher and scheduling logic
+├── analysis.py                      # OpenAI NLP parsing logic
+└── tests/                           # Unit and Integration tests
 ```
 
-## 🔧 Технологии
-- Python 3.8+
-- ClickUp API
-- Twilio (Voice/SMS)
-- OpenAI (Whisper / GPT‑4‑класс)
-- Flask (вебхук‑сервер)
+---
 
-## ⚡ Производительность (v3.0 → v4.0)
-- Время обработки: 40–60s → 20–30s (~50% быстрее)
-- Кол-во вызовов OpenAI: 2 → 1 (~50% меньше)
-- Независимость от Whisper API в вебхук‑режиме
+## 🔒 Security Best Practices
 
-## 🔒 Продакшн‑настройки (рекомендации)
-- HTTPS (обязательно для Twilio), SSL‑сертификат.
-- Reverse‑proxy (Nginx), systemd‑сервис, мониторинг.
-- Хранение ключей в `SECRETS_PATH`, ограничение прав, rate‑limit, валидация запросов.
+- **Never commit `secrets.json` or `.env` files.** They are ignored by default.
+- In production, always use **HTTPS** for your Twilio Webhook endpoints.
+- If exposing the Flask webhook server to the internet, put it behind a reverse proxy like **Nginx** and use TLS.
+- Validate incoming Twilio webhook signatures in production to prevent spoofed HTTP requests.
 
-## 🆘 Частые проблемы
-- Вебхук‑сервер недоступен:
-  - Проверьте `./start_webhook_server.sh status`, порты и логи.
-  - Убедитесь, что `WEBHOOK_HOST/WEBHOOK_PORT` и `BASE_DIR` заданы корректно.
-- Не ставится Flask/pytz:
-  - Установите дополнительно: `pip install Flask pytz`.
-- Нет записей/транскриптов:
-  - Проверьте права записи в каталоги `var/*` или `BASE_DIR/*`.
-  - Убедитесь, что в Twilio включены записи и/или настроены колбэки.
-
-## 📘 Documentation
-
-- [Quick Start Guide](docs/QUICKSTART_v4.md)
-- [Webhook Setup Guide](docs/REALTIME_TRANSCRIPTION_SETUP.md)
-- [**Telegram Setup Guide**](TELEGRAM_SETUP.md) 🆕
-- [Changelog](docs/CHANGELOG_v4.md)
-- [Migration Guide](docs/MIGRATION_COMPLETE_v4.md)
+---
 
 ## 🤝 Contributing
 
+Contributions are welcome! If you'd like to improve the NLP logic, add new integration channels (like Slack or Discord), or optimize the webhook server:
+
 1. Fork the repository
-2. Create your feature branch
-3. Run tests
-4. Submit a pull request
+2. Create a new Feature branch (`git checkout -b feature/AmazingFeature`)
+3. Commit your changes (`git commit -m 'Add some AmazingFeature'`)
+4. Push to the branch (`git push origin feature/AmazingFeature`)
+5. Open a Pull Request
 
 ## 📄 License
 
-This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
+Distributed under the **MIT License**. See [`LICENSE`](LICENSE) for more information.

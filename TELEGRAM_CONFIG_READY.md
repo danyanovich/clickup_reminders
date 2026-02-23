@@ -85,7 +85,7 @@
 После обновления файлов запустите тест:
 
 ```bash
-cd /Users/danyanovich/code\ projects/clickup-rem
+cd /path/to/clickup_reminders
 python3 test_telegram_integration.py
 ```
 
