@@ -15,9 +15,9 @@ except ImportError:  # pragma: no cover
 import openai  # type: ignore
 
 try:  # pragma: no cover - support both package and script execution
-    from .models import AnalysisResult
+    from .core.models import AnalysisResult
 except ImportError:  # pragma: no cover - script mode fallback
-    from models import AnalysisResult  # type: ignore
+    from core.models import AnalysisResult  # type: ignore
 
 
 class VoiceAnalyzer:

@@ -15,6 +15,7 @@ import time
 from typing import Any, Dict
 
 from telegram_reminder_service import ConfigurationError, TelegramReminderService
+from core import load_config, load_secrets
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:

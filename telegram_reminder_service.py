@@ -14,124 +14,25 @@ import logging
 import os
 import time
 from collections import deque
-from dataclasses import dataclass, field
-from datetime import datetime, timedelta
-from pathlib import Path
-from typing import Any, Dict, Iterable, List, Optional, Sequence, Set, Tuple
-
-import pytz
-import requests
-
-from clickup import ClickUpClient
-
 try:  # pragma: no cover - support both package and script execution
+    from .core import ReminderTask, DeliveryStats, load_config as load_raw_config, load_secrets
+    from .core.telegram_utils import format_task_message, build_task_keyboard, format_group_summary
     from .telephony import TwilioService
 except ImportError:  # pragma: no cover - script mode fallback
+    from core import ReminderTask, DeliveryStats, load_config as load_raw_config, load_secrets
+    from core.telegram_utils import format_task_message, build_task_keyboard, format_group_summary
     from telephony import TwilioService  # type: ignore
 
 LOGGER = logging.getLogger(__name__)
 
 PROJECT_ROOT = Path(__file__).resolve().parent
-DEFAULT_CONFIG_PATH = PROJECT_ROOT / "config.json"
 CHAT_ID_CACHE_PATH = PROJECT_ROOT / "var" / "telegram_chat_id.txt"
 CALLBACK_LOG_PATH = PROJECT_ROOT / "var" / "telegram_callback_log.jsonl"
-DEFAULT_SECRETS_CANDIDATES: Tuple[Path, ...] = (
-    PROJECT_ROOT / ".venv" / "bin" / "secrets.json",
-    PROJECT_ROOT.parent / ".venv" / "bin" / "secrets.json",
-)
 
 
 class ConfigurationError(RuntimeError):
     """Raised when required configuration is missing."""
 
-
-@dataclass
-class ReminderTask:
-    """Normalized structure representing a ClickUp reminder task."""
-
-    task_id: str
-    name: str
-    status: str
-    due_human: str
-    assignee: str
-    url: str
-    assignee_id: Optional[str] = None
-    description: Optional[str] = None
-
-
-@dataclass
-class DeliveryStats:
-    timestamp: datetime
-    timezone: str
-    total_tasks: int
-    delivered_tasks: int
-    per_chat_counts: Dict[str, int]
-    per_chat_assignees: Dict[str, List[str]]
-    missing_tasks: int
-    broadcast_all: bool
-    requested_chat: Optional[str]
-    callbacks_processed: int = 0
-    voice_calls: int = 0
-    voice_failures: int = 0
-    sms_sent: int = 0
-    user_actions: List[str] = field(default_factory=list)
-    failed_actions: List[str] = field(default_factory=list)
-
-
-def _load_json(path: Path) -> Dict[str, Any]:
-    with open(path, "r", encoding="utf-8") as fh:
-        return json.load(fh)
-
-
-def _resolve_config_path() -> Path:
-    env_override = os.getenv("CONFIG_PATH")
-    if env_override:
-        candidate = Path(env_override).expanduser()
-        if candidate.exists():
-            return candidate
-        raise ConfigurationError(f"CONFIG_PATH points to missing file: {candidate}")
-    if DEFAULT_CONFIG_PATH.exists():
-        return DEFAULT_CONFIG_PATH
-    raise ConfigurationError("config.json not found. Set CONFIG_PATH or create config.json.")
-
-
-def load_raw_config() -> Dict[str, Any]:
-    """Load project configuration as a raw dict."""
-    return _load_json(_resolve_config_path())
-
-
-def _iter_secret_candidates() -> Iterable[Path]:
-    env_secret = os.getenv("SECRETS_PATH")
-    if env_secret:
-        yield Path(env_secret).expanduser()
-    for candidate in DEFAULT_SECRETS_CANDIDATES:
-        yield candidate.expanduser()
-
-
-def _extract_nested(payload: Dict[str, Any], paths: Sequence[Sequence[str]]) -> Optional[Any]:
-    """Return the first non-empty value located at any of the provided paths."""
-    for path in paths:
-        node: Any = payload
-        for key in path:
-            if isinstance(node, dict) and key in node:
-                node = node[key]
-            else:
-                node = None
-                break
-        if node is None:
-            continue
-        if isinstance(node, dict) and "value" in node:
-            node = node["value"]
-        if isinstance(node, str) and node:
-            return node
-        if isinstance(node, (list, tuple)):
-            collected = []
-            for item in node:
-                if isinstance(item, str) and item.strip():
-                    collected.append(item.strip())
-            if collected:
-                return collected
-    return None
 
 
 def _normalise_ids(values: Iterable[Any]) -> List[str]:
@@ -153,163 +54,55 @@ def _normalise_ids(values: Iterable[Any]) -> List[str]:
     return cleaned
 
 
-def load_runtime_credentials(config: Dict[str, Any]) -> Dict[str, Any]:
-    """Load ClickUp and Telegram credentials from env/secrets."""
-    env: Dict[str, Any] = {
-        "clickup_api_key": os.getenv("CLICKUP_API_KEY"),
-        "clickup_team_id": os.getenv("CLICKUP_TEAM_ID") or config.get("clickup_workspace_id"),
-        "clickup_space_ids": os.getenv("CLICKUP_SPACE_IDS"),
-        "telegram_bot_token": os.getenv("TELEGRAM_BOT_TOKEN"),
-        "telegram_chat_id": os.getenv("TELEGRAM_CHAT_ID") or (config.get("telegram", {}) or {}).get("chat_id"),
-        "telegram_group_chat_id": os.getenv("TELEGRAM_GROUP_CHAT_ID")
-        or (config.get("telegram", {}) or {}).get("group_chat_id"),
-        "twilio_account_sid": os.getenv("TWILIO_ACCOUNT_SID"),
-        "twilio_auth_token": os.getenv("TWILIO_AUTH_TOKEN"),
-        "twilio_phone_number": os.getenv("TWILIO_PHONE_NUMBER"),
-        "twilio_to_alex": os.getenv("TWILIO_TO_ALEX"),
+def _normalise_ids(values: Iterable[Any]) -> List[str]:
+    cleaned: List[str] = []
+    for candidate in values:
+        if candidate is None:
+            continue
+        normalized = str(candidate).strip()
+        if not normalized:
+            continue
+        if "<" in normalized or ">" in normalized:
+            continue
+        if normalized.lower().startswith("optional"):
+            continue
+        if not normalized.replace("-", "").isdigit():
+            continue
+        if normalized not in cleaned:
+            cleaned.append(normalized)
+    return cleaned
+
+
+def load_runtime_credentials(config_obj: Any) -> Dict[str, Any]:
+    """Load ClickUp and Telegram credentials from env/secrets using unified core logic."""
+    try:
+        s = load_secrets()
+    except Exception as exc:
+        raise ConfigurationError(f"Failed to load secrets: {exc}")
+
+    # Map core Secrets model to the legacy dict expected by TelegramReminderService
+    # We use config_obj.telegram if available for fallbacks
+    telegram_cfg = getattr(config_obj, "telegram", {}) or {}
+    
+    env = {
+        "clickup_api_key": s.clickup_api_key,
+        "clickup_team_id": s.clickup_team_id,
+        "clickup_team_ids": getattr(config_obj, "clickup_team_ids", []),
+        "clickup_space_ids": getattr(config_obj, "clickup_space_ids", []),
+        "telegram_bot_token": s.telegram_bot_token,
+        "telegram_chat_id": s.telegram_chat_id or telegram_cfg.get("chat_id"),
+        "telegram_group_chat_id": s.telegram_group_chat_id or telegram_cfg.get("group_chat_id"),
+        "twilio_account_sid": s.twilio_sid,
+        "twilio_auth_token": s.twilio_token,
+        "twilio_phone_number": s.twilio_phone,
+        "twilio_to_alex": os.getenv("TWILIO_TO_ALEX"), # alex override remains from env
     }
-
-    team_ids: List[str] = []
-    env_team_ids = os.getenv("CLICKUP_TEAM_IDS")
-    if env_team_ids:
-        for candidate in env_team_ids.split(","):
-            normalized = candidate.strip()
-            if normalized:
-                team_ids.append(normalized)
-
-    clickup_cfg = config.get("clickup", {}) or {}
-    for source in (
-        clickup_cfg.get("team_ids"),
-        clickup_cfg.get("workspace_ids"),
-        config.get("clickup_team_ids"),
-        config.get("clickup_workspace_ids"),
-    ):
-        if not source:
-            continue
-        if isinstance(source, (list, tuple, set)):
-            iterable = source
-        else:
-            iterable = [source]
-        for candidate in iterable:
-            normalized = str(candidate).strip()
-            if normalized and normalized not in team_ids:
-                team_ids.append(normalized)
-
-    env["clickup_team_ids"] = _normalise_ids(team_ids)
-
-    space_candidates: List[Any] = []
-    if env.get("clickup_space_ids"):
-        space_candidates.extend(str(env["clickup_space_ids"]).split(","))
-    for source in (
-        clickup_cfg.get("space_ids"),
-        config.get("clickup_space_ids"),
-    ):
-        if not source:
-            continue
-        if isinstance(source, (list, tuple, set)):
-            values = source
-        else:
-            values = [source]
-        space_candidates.extend(values)
-    env["clickup_space_ids"] = _normalise_ids(space_candidates)
-
-    missing = {key for key, value in env.items() if key != "telegram_chat_id" and not value}
-    secrets_payload: Optional[Dict[str, Any]] = None
-    if missing or (not env.get("telegram_bot_token")) or (not env.get("telegram_chat_id")):
-        for candidate in _iter_secret_candidates():
-            if candidate.exists():
-                try:
-                    secrets_payload = _load_json(candidate)
-                    break
-                except Exception as exc:  # pragma: no cover - defensive guard
-                    LOGGER.warning("Failed to read secrets file %s: %s", candidate, exc)
-                    continue
-
-    if secrets_payload:
-        secret_mappings = {
-            "clickup_api_key": (("clickup", "api_key"), ("telegram", "secrets", "clickup_api_key")),
-            "clickup_team_id": (("clickup", "team_id"), ("telegram", "secrets", "clickup_team_id")),
-            "clickup_team_ids": (
-                ("clickup", "team_ids"),
-                ("clickup", "workspace_ids"),
-                ("telegram", "secrets", "clickup_team_ids"),
-            ),
-            "clickup_space_ids": (
-                ("clickup", "space_ids"),
-                ("clickup", "workspace_ids"),
-                ("telegram", "secrets", "clickup_space_ids"),
-            ),
-            "telegram_bot_token": (
-                ("telegram", "bot_token"),
-                ("telegram", "secrets", "bot_token"),
-            ),
-            "telegram_chat_id": (
-                ("telegram", "chat_id"),
-                ("telegram", "secrets", "chat_id"),
-            ),
-            "telegram_group_chat_id": (
-                ("telegram", "group_chat_id"),
-                ("telegram", "secrets", "group_chat_id"),
-            ),
-            "twilio_account_sid": (
-                ("twilio", "account_sid"),
-                ("twilio", "secrets", "account_sid"),
-            ),
-            "twilio_auth_token": (
-                ("twilio", "auth_token"),
-                ("twilio", "secrets", "auth_token"),
-            ),
-            "twilio_phone_number": (
-                ("twilio", "phone_number"),
-                ("twilio", "secrets", "phone_number"),
-            ),
-            "twilio_to_alex": (
-                ("twilio", "to_alex"),
-                ("twilio", "secrets", "to_alex"),
-            ),
-        }
-        for key, paths in secret_mappings.items():
-            if not env.get(key):
-                env_value = _extract_nested(secrets_payload, paths)
-                if env_value:
-                    env[key] = env_value
-
-    if not env.get("clickup_api_key"):
-        raise ConfigurationError("CLICKUP_API_KEY not provided via env or secrets.")
-    if not env.get("clickup_team_id") and not env.get("clickup_team_ids"):
-        raise ConfigurationError("CLICKUP_TEAM_ID(S) not provided via env or secrets/config.")
-    if not env.get("telegram_bot_token"):
-        raise ConfigurationError("TELEGRAM_BOT_TOKEN not provided via env or secrets.")
-
-    team_ids_from_env = env.get("clickup_team_ids")
-    normalized_team_ids: List[str] = []
-    if isinstance(team_ids_from_env, (list, tuple, set)):
-        normalized_team_ids = _normalise_ids(team_ids_from_env)
-    elif isinstance(team_ids_from_env, str):
-        normalized_team_ids = _normalise_ids([team_ids_from_env])
-
-    if not normalized_team_ids:
-        fallback_team_id = env.get("clickup_team_id")
-        if fallback_team_id:
-            normalized_team_ids = [str(fallback_team_id).strip()]
-    else:
-        fallback_team_id = env.get("clickup_team_id")
-        fallback_candidates: List[str] = []
-        if fallback_team_id:
-            fallback_candidates = _normalise_ids([fallback_team_id])
-        for candidate in fallback_candidates:
-            if candidate not in normalized_team_ids:
-                normalized_team_ids.insert(0, candidate)
-        if normalized_team_ids:
-            env["clickup_team_id"] = normalized_team_ids[0]
-
-    env["clickup_team_ids"] = normalized_team_ids
-
-    space_ids = env.get("clickup_space_ids")
-    if isinstance(space_ids, str):
-        env["clickup_space_ids"] = _normalise_ids(space_ids.split(","))
-
-    return env  # contains telegram_chat_id which may still be None
+    
+    # Ensure team_ids is a list
+    if not env["clickup_team_ids"] and env["clickup_team_id"]:
+        env["clickup_team_ids"] = [env["clickup_team_id"]]
+        
+    return env
 
 
 def _format_due(due_raw: Any, timezone_name: str) -> str:
@@ -461,6 +254,16 @@ class TelegramReminderService:
         self._warn_chat_configuration()
         self._callback_log_max_bytes = self._resolve_callback_log_max_bytes()
         self._callback_log_max_entries = self._resolve_callback_log_max_entries()
+
+        # Initialize ClickUp Engine
+        try:
+            from core.engine import ClickUpEngine
+            from core import load_config as load_raw_cfg, load_secrets as load_raw_secs
+        except ImportError:
+            from .core.engine import ClickUpEngine
+            from .core import load_config as load_raw_cfg, load_secrets as load_raw_secs
+
+        self.engine = ClickUpEngine(load_raw_cfg(), load_raw_secs())
 
     @classmethod
     def from_environment(cls) -> "TelegramReminderService":
@@ -1091,49 +894,7 @@ class TelegramReminderService:
         stats = self._last_delivery_stats
         if not stats:
             return None
-
-        timestamp_local = stats.timestamp
-        try:
-            tz = pytz.timezone(stats.timezone)
-        except Exception:  # pragma: no cover - fallback
-            tz = pytz.UTC
-
-        if timestamp_local.tzinfo is None:
-            timestamp_local = tz.localize(timestamp_local)
-        else:
-            try:
-                timestamp_local = timestamp_local.astimezone(tz)
-            except Exception:  # pragma: no cover - fallback
-                pass
-
-        time_label = timestamp_local.strftime("%d.%m %H:%M")
-        tz_label = timestamp_local.strftime("%Z") or stats.timezone
-
-        lines = [f"📊 Отчёт бота ({time_label} {tz_label}):"]
-        lines.append(f"• Отправлено задач: {stats.delivered_tasks}/{stats.total_tasks}")
-        lines.append(f"• Чатов с уведомлениями: {len(stats.per_chat_counts)}")
-
-        if stats.missing_tasks:
-            lines.append(f"• Без уведомлений (нет чатов/фильтров): {stats.missing_tasks}")
-        if stats.callbacks_processed:
-            lines.append(f"• Ответов пользователей обработано: {stats.callbacks_processed}")
-        if stats.voice_calls or stats.voice_failures:
-            voice_line = f"• Запущено звонков: {stats.voice_calls}"
-            if stats.voice_failures:
-                voice_line += f" (ошибок: {stats.voice_failures})"
-            lines.append(voice_line)
-        if stats.sms_sent:
-            lines.append(f"• SMS уведомлений: {stats.sms_sent}")
-
-        if stats.user_actions:
-            lines.append("• Ответы пользователей:")
-            for entry in stats.user_actions:
-                lines.append(f"  ◦ {entry}")
-
-        if stats.failed_actions:
-            lines.append("• Неудачные действия:")
-            for entry in stats.failed_actions:
-                lines.append(f"  ◦ {entry}")
+        return format_group_summary(stats)
 
         if stats.per_chat_counts:
             lines.append("Чаты:")
@@ -1436,81 +1197,25 @@ class TelegramReminderService:
     # --------------------------------------------------------------------- #
     def fetch_pending_tasks(self, limit: Optional[int] = None) -> List[ReminderTask]:
         """Return tasks from ClickUp that match the reminder filters and are not completed."""
-        tasks_raw: List[Dict[str, Any]] = []
         try:
-            if self.reminder_tags:
-                seen_ids: set[str] = set()
-                for client in self.clickup_clients:
-                    for tag in self.reminder_tags:
-                        for task in client.fetch_tasks_by_tag(tag, space_ids=self.space_ids or None):
-                            task_id = str(task.get("id") or "").strip()
-                            if not task_id or task_id in seen_ids:
-                                continue
-                            tasks_raw.append(task)
-                            seen_ids.add(task_id)
-            else:
-                seen_ids = set()
-                for client in self.clickup_clients:
-                    batch = client.fetch_tasks(
-                        list_name=self.reminders_list_name if not self.reminders_list_id else None,
-                        list_id=self.reminders_list_id,
-                    )
-                    for task in batch:
-                        task_id = str(task.get("id") or "").strip()
-                        if not task_id or task_id in seen_ids:
-                            continue
-                        tasks_raw.append(task)
-                        seen_ids.add(task_id)
+            pending = self.engine.fetch_pending_reminders()
+            if limit:
+                pending = pending[:limit]
+            return pending
         except Exception as exc:
-            LOGGER.error("Failed to fetch tasks from ClickUp: %s", exc)
-            raise
-
-        pending: List[ReminderTask] = []
-        for task in tasks_raw:
-            status_obj = task.get("status") or {}
-            status_value = str(status_obj.get("status") or status_obj.get("name") or "").lower()
-            if status_value in self.completed_statuses or status_obj.get("type") == "done":
-                continue
-
-            assignee_name, assignee_id = _assignee_identity(task)
-
-            pending.append(
-                ReminderTask(
-                    task_id=str(task["id"]),
-                    name=str(task.get("name", "Без названия")),
-                    status=status_obj.get("status") or status_obj.get("name") or "—",
-                    due_human=_format_due(task.get("due_date"), self.timezone_name),
-                    assignee=assignee_name,
-                    assignee_id=assignee_id,
-                    url=f"https://app.clickup.com/t/{task['id']}",
-                    description=str(
-                        task.get("description")
-                        or task.get("text_content")
-                        or task.get("text")
-                        or ""
-                    ).strip() or None,
-                )
-            )
-
-        pending.sort(key=lambda t: (t.due_human, t.name))
-
-        if limit:
-            pending = pending[:limit]
-        return pending
+            LOGGER.error("Failed to fetch tasks from ClickUp via engine: %s", exc)
+            return []
 
     def update_clickup_status(self, task_id: str, status_key: str) -> None:
-        """Update ClickUp task status using the configured mapping."""
-        status_key = status_key.upper()
-        target = self.status_mapping.get(status_key)
-        if not target:
-            raise ValueError(f"Unsupported status key: {status_key}")
-        self.clickup_client.update_status(task_id, target)
+        """Update ClickUp task status using the engine."""
+        status = self.status_mapping.get(status_key)
+        if not status:
+            LOGGER.error("Unknown status key: %s (mapping=%s)", status_key, self.status_mapping)
+            return
 
-        comment = f"Статус обновлен через Telegram-бота: {status_key}"
-        try:
-            self.clickup_client.add_comment(task_id, comment)
-        except Exception as exc:
-            LOGGER.warning("Failed to add ClickUp comment for %s: %s", task_id, exc)
+        success = self.engine.update_task_status(task_id, status)
+        if not success:
+            LOGGER.error("Failed to update ClickUp status for %s", task_id)
 
     def fetch_task_details(self, task_id: str) -> Dict[str, Any]:
         try:
@@ -1544,40 +1249,18 @@ class TelegramReminderService:
         return self._telegram_post("sendMessage", payload)
 
     def send_task_message(self, chat_id: str, task: ReminderTask, ordinal: int) -> Dict[str, Any]:
-        text = (
-            f"🔔 <b>Напоминание #{ordinal}</b>\n\n"
-            f"📋 <b>Задача:</b> {task.name}\n"
-            f"👤 <b>Исполнитель:</b> {task.assignee}\n"
-            f"📊 <b>Статус:</b> {task.status}\n"
-            f"⏰ <b>Срок:</b> {task.due_human}\n"
-            f"🔗 <a href=\"{task.url}\">Открыть задачу</a>"
-        )
+        text = format_task_message(task, ordinal)
+        
         telegram_cfg = self.config.get("telegram") or {}
         buttons_per_row = telegram_cfg.get("buttons_per_row", 3)
-        try:
-            buttons_per_row_int = int(buttons_per_row)
-            if buttons_per_row_int <= 0:
-                buttons_per_row_int = 3
-        except (TypeError, ValueError):
-            buttons_per_row_int = 3
-
-        keyboard_buttons = [
-            {
-                "text": action["text"],
-                "callback_data": f"s:{task.task_id}:{action['code']}",
-            }
-            for action in self.status_actions
-        ]
-
-        inline_keyboard: List[List[Dict[str, Any]]] = []
-        for idx in range(0, len(keyboard_buttons), buttons_per_row_int):
-            inline_keyboard.append(keyboard_buttons[idx : idx + buttons_per_row_int])
-
-        if self.chat_shortcuts:
-            shortcut_buttons = [{"text": shortcut["text"], "url": shortcut["url"]} for shortcut in self.chat_shortcuts]
-            inline_keyboard.append(shortcut_buttons)
-
-        reply_markup = {"inline_keyboard": inline_keyboard}
+        
+        reply_markup = build_task_keyboard(
+            task_id=task.task_id,
+            status_actions=self.status_actions,
+            buttons_per_row=buttons_per_row,
+            shortcuts=self.chat_shortcuts
+        )
+        
         payload = {
             "chat_id": chat_id,
             "text": text,

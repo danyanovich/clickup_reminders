@@ -23,12 +23,12 @@ from openai import OpenAI
 
 # Use unified config/secrets modules
 try:
-    from .config import load_config as load_cfg
-    from .secrets import load_secrets as load_secs
+    from .core import load_config as load_cfg
+    from .core import load_secrets as load_secs
     from .telegram_notifier import create_telegram_notifier
 except ImportError:
-    from config import load_config as load_cfg
-    from secrets import load_secrets as load_secs
+    from core import load_config as load_cfg
+    from core import load_secrets as load_secs
     from telegram_notifier import create_telegram_notifier
 
 BASE_DIR = os.getenv("BASE_DIR") or os.path.dirname(os.path.abspath(__file__))
@@ -61,6 +61,15 @@ class ReminderSystem:
         clickup_config = self.config.get("clickup", {})
 
         # Ключи ClickUp
+        # Initialize Engine
+        try:
+            from core.engine import ClickUpEngine
+        except ImportError:
+            from .core.engine import ClickUpEngine
+            
+        self.engine = ClickUpEngine(load_cfg(), load_secs())
+        
+        # Keep legacy fields for a while to avoid breakages during refactor
         self.clickup_token = self._get_secret_value("clickup", ["api_key", "clickup_api_key"])
         if not self.clickup_token:
             # Исторический путь через telegram-секцию
@@ -392,96 +401,13 @@ class ReminderSystem:
         return None
     
     def get_tasks_for_reminder(self) -> List[Dict]:
-        """Получение задач для напоминания из ClickUp"""
-        self._log("Получение задач из ClickUp...")
-        
-        headers = {
-            "Authorization": self.clickup_token,
-            "Content-Type": "application/json"
-        }
-        
+        """Получение задач для напоминания из ClickUp через Engine"""
+        self._log("Получение задач из ClickUp через Engine...")
         try:
-            # Получаем workspace
-            # Support both workspace_id and team_id
-            clickup_config = self.config.get("clickup", {})
-            workspace_id = (
-                clickup_config.get("workspace_id")
-                or clickup_config.get("team_id")
-                or self.config.get("clickup_workspace_id")  # legacy format
-                or self._get_secret_value("clickup", ["team_id"])
-            )
-            if not workspace_id:
-                raise KeyError("ClickUp workspace/team id not configured")
-            
-            # Получаем spaces
-            spaces_url = f"https://api.clickup.com/api/v2/team/{workspace_id}/space?archived=false"
-            spaces_response = requests.get(spaces_url, headers=headers)
-            spaces_response.raise_for_status()
-            spaces = spaces_response.json()["spaces"]
-            
-            all_tasks = []
-            reminders_list_name = (
-                clickup_config.get("reminders_list_name")
-                or self.config.get("reminder_list_name")  # legacy format
-                or "Напоминания"  # default fallback
-            )
-            
-            # Ищем список "Напоминания" во всех spaces
-            for space in spaces:
-                folders_url = f"https://api.clickup.com/api/v2/space/{space['id']}/folder?archived=false"
-                folders_response = requests.get(folders_url, headers=headers)
-                folders_response.raise_for_status()
-                folders = folders_response.json()["folders"]
-                
-                # Проверяем folderless списки
-                lists_url = f"https://api.clickup.com/api/v2/space/{space['id']}/list?archived=false"
-                lists_response = requests.get(lists_url, headers=headers)
-                lists_response.raise_for_status()
-                lists = lists_response.json()["lists"]
-                
-                # Проверяем списки в папках
-                for folder in folders:
-                    folder_lists_url = f"https://api.clickup.com/api/v2/folder/{folder['id']}/list?archived=false"
-                    folder_lists_response = requests.get(folder_lists_url, headers=headers)
-                    folder_lists_response.raise_for_status()
-                    lists.extend(folder_lists_response.json()["lists"])
-                
-                # Ищем список с нужным именем
-                for list_item in lists:
-                    if list_item["name"] == reminders_list_name:
-                        list_id = list_item["id"]
-                        
-                        # Получаем задачи из списка
-                        tasks_url = f"https://api.clickup.com/api/v2/list/{list_id}/task"
-                        params = {
-                            "archived": "false",
-                            "subtasks": "false",
-                            "include_closed": "false"
-                        }
-                        tasks_response = requests.get(tasks_url, headers=headers, params=params)
-                        tasks_response.raise_for_status()
-                        tasks = tasks_response.json()["tasks"]
-                        
-                        # Фильтруем задачи с due_date в прошлом или сейчас
-                        now = datetime.now(self.tz)
-                        
-                        for task in tasks:
-                            due_date = task.get("due_date")
-                            if due_date:
-                                # due_date в миллисекундах
-                                due_datetime = datetime.fromtimestamp(int(due_date) / 1000, tz=self.tz)
-                                
-                                if due_datetime <= now:
-                                    # Проверяем, не была ли задача уже выполнена
-                                    task_id = task.get("id")
-                                    if not self._is_task_completed(task_id):
-                                        all_tasks.append(task)
-                                    else:
-                                        self._log(f"Задача {task_id} ({task.get('name')}) уже выполнена, пропускаем")
-            
-            self._log(f"Найдено задач для напоминания: {len(all_tasks)}")
-            return all_tasks
-            
+            tasks = self.engine.fetch_pending_reminders()
+            # Convert ReminderTask model back to dict for legacy compatibility
+            # In a real refactor, we would change the whole system to use models
+            return [t.__dict__ for t in tasks]
         except Exception as e:
             self._log(f"Ошибка при получении задач: {str(e)}", "ERROR")
             return []

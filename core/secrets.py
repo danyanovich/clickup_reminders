@@ -5,13 +5,10 @@ import os
 from pathlib import Path
 from typing import Any, Dict, Iterable, Mapping, Sequence
 
-try:  # pragma: no cover - support both package and script execution
-    from .models import Secrets
-except ImportError:  # pragma: no cover - script mode fallback
-    from models import Secrets  # type: ignore
+from .models import Secrets
 
 SECRETS_ENV_VAR = "SECRETS_PATH"
-PROJECT_ROOT = Path(__file__).resolve().parent
+PROJECT_ROOT = Path(__file__).resolve().parent.parent
 DEFAULT_SECRETS_PATH = PROJECT_ROOT / ".venv" / "bin" / "secrets.json"
 LEGACY_SECRETS_PATH = PROJECT_ROOT.parent / ".venv" / "bin" / "secrets.json"
 
@@ -22,6 +19,7 @@ ENV_SECRET_KEYS = {
     "twilio_token": "TWILIO_AUTH_TOKEN",
     "twilio_phone": "TWILIO_PHONE_NUMBER",
     "openai_api_key": "OPENAI_API_KEY",
+    "telegram_bot_token": "TELEGRAM_BOT_TOKEN",
 }
 
 
@@ -53,6 +51,9 @@ def load_secrets(path: Path | str | None = None) -> Secrets:
         "twilio_token": _extract(payload, (("twilio", "auth_token"), ("twilio", "secrets", "auth_token"))),
         "twilio_phone": _extract(payload, (("twilio", "phone_number"), ("twilio", "secrets", "phone_number"))),
         "openai_api_key": _extract(payload, (("openai", "api_key"), ("openai", "secrets", "api_key"))),
+        "telegram_bot_token": _extract(payload, (("telegram", "bot_token"), ("telegram", "secrets", "bot_token"))),
+        "telegram_chat_id": _extract(payload, (("telegram", "chat_id"), ("telegram", "secrets", "chat_id"))),
+        "telegram_group_chat_id": _extract(payload, (("telegram", "group_chat_id"), ("telegram", "secrets", "group_chat_id"))),
     }
 
     missing_fields = [field for field, value in resolved.items() if not value]

@@ -6,9 +6,9 @@ from twilio.rest import Client
 from twilio.twiml.voice_response import Gather, VoiceResponse
 
 try:  # pragma: no cover - support both package and script execution
-    from .models import CallResult, SMSResult
+    from .core.models import CallResult, SMSResult
 except ImportError:  # pragma: no cover - script mode fallback
-    from models import CallResult, SMSResult  # type: ignore
+    from core.models import CallResult, SMSResult  # type: ignore
 
 
 class TwilioService:

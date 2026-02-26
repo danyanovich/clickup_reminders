@@ -5,13 +5,10 @@ import os
 from pathlib import Path
 from typing import Any, Dict, Iterable
 
-try:  # pragma: no cover - support both package and script execution
-    from .models import ReminderConfig, WorkingHours
-except ImportError:  # pragma: no cover - script mode fallback
-    from models import ReminderConfig, WorkingHours  # type: ignore
+from .models import ReminderConfig, WorkingHours
 
 CONFIG_ENV_VAR = "CONFIG_PATH"
-PROJECT_ROOT = Path(__file__).resolve().parent
+PROJECT_ROOT = Path(__file__).resolve().parent.parent
 DEFAULT_CONFIG_PATH = PROJECT_ROOT / "config.json"
 
 
@@ -35,13 +32,16 @@ def load_config(path: Path | str | None = None) -> ReminderConfig:
     )
 
     return ReminderConfig(
-        reminder_list_name=payload["reminder_list_name"],
-        phone_mapping=payload["phone_mapping"],
+        reminder_list_name=payload.get("reminder_list_name", "Напоминания"),
+        phone_mapping=payload.get("phone_mapping", {}),
         working_hours=working_hours,
         clickup_workspace_id=payload.get("clickup_workspace_id"),
+        clickup_team_ids=payload.get("clickup_team_ids", []),
+        clickup_space_ids=payload.get("clickup_space_ids", []),
         check_interval_minutes=int(payload.get("check_interval_minutes", 30)),
         call_timeout_seconds=int(payload.get("call_timeout_seconds", 30)),
         max_retries=int(payload.get("max_retries", 1)),
+        telegram=payload.get("telegram", {}),
     )
 
 

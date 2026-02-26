@@ -17,21 +17,25 @@ from openai import OpenAI
 app = Flask(__name__)
 
 # Пути к директориям
-# BASE_DIR можно переопределить через переменную окружения BASE_DIR.
-# По умолчанию используется директория текущего файла.
-BASE_DIR = os.getenv("BASE_DIR") or os.path.dirname(os.path.abspath(__file__))
-TRANSCRIPTIONS_DIR = os.path.join(BASE_DIR, "transcriptions")
-CALL_DATA_DIR = os.path.join(BASE_DIR, "call_data")
-LOGS_DIR = os.path.join(BASE_DIR, "logs")
-CONFIG_PATH = os.path.join(BASE_DIR, "config.json")
+PROJECT_ROOT = Path(__file__).resolve().parent
+LOGS_DIR = PROJECT_ROOT / "var" / "logs"
+LOGS_DIR.mkdir(parents=True, exist_ok=True)
+# Assuming CALL_DATA_DIR and TRANSCRIPTIONS_DIR are still needed and defined relative to PROJECT_ROOT
+CALL_DATA_DIR = PROJECT_ROOT / "call_data"
+TRANSCRIPTIONS_DIR = PROJECT_ROOT / "transcriptions"
+
+os.makedirs(TRANSCRIPTIONS_DIR, exist_ok=True)
+os.makedirs(CALL_DATA_DIR, exist_ok=True)
+
 
 # Timezone
 TZ = pytz.timezone("Europe/Lisbon")
 
 # Убеждаемся что директории существуют
-os.makedirs(TRANSCRIPTIONS_DIR, exist_ok=True)
-os.makedirs(CALL_DATA_DIR, exist_ok=True)
-os.makedirs(LOGS_DIR, exist_ok=True)
+# The previous os.makedirs calls are now handled by the new path definitions and LOGS_DIR.mkdir()
+# os.makedirs(TRANSCRIPTIONS_DIR, exist_ok=True)
+# os.makedirs(CALL_DATA_DIR, exist_ok=True)
+# os.makedirs(LOGS_DIR, exist_ok=True)
 
 
 def log_message(message: str, level: str = "INFO"):
@@ -47,15 +51,20 @@ def log_message(message: str, level: str = "INFO"):
 
 
 def _load_config():
-    """Читает конфигурацию, если доступна."""
+    """Читает конфигурацию через единый модуль."""
     try:
-        with open(CONFIG_PATH, "r", encoding="utf-8") as f:
-            return json.load(f)
-    except FileNotFoundError:
-        log_message(f"Файл конфигурации не найден: {CONFIG_PATH}", "WARNING")
+        return load_cfg()
     except Exception as exc:
-        log_message(f"Ошибка чтения конфигурации: {exc}", "ERROR")
-    return {}
+        log_message(f"Ошибка загрузки конфигурации: {exc}", "ERROR")
+        return None
+
+def _get_secrets():
+    """Читает секреты через единый модуль."""
+    try:
+        return load_secs()
+    except Exception as exc:
+        log_message(f"Ошибка загрузки секретов: {exc}", "ERROR")
+        return None
 
 
 CONFIG = _load_config()

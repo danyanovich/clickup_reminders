@@ -12,14 +12,14 @@ on:
         required: false
         default: 'false'
   
-  schedule:
-    - cron: "0 10-18 * * 1-5"  # Еженедельно по будням, 10:00–18:00 (UTC ≈ Lisbon winter time)
-  
-  push:
-    branches:
-      - main
-    paths:
-      - '.github/workflows/**'  # Запуск при изменении workflow-файлов
+#  schedule:
+#    - cron: "0 10-18 * * 1-5"  # Еженедельно по будням, 10:00–18:00 (UTC ≈ Lisbon winter time)
+#  
+#  push:
+#    branches:
+#      - main
+#    paths:
+#      - '.github/workflows/**'  # Запуск при изменении workflow-файлов
 
 jobs:
   run-script:
